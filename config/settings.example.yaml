@@ -1,0 +1,52 @@
+# Скопировать в settings.yaml (setup.ps1 делает это сам). Секреты сюда НЕ
+# пишутся — только имена переменных окружения (или строк в .env).
+
+claude:
+  binary: "claude"              # для проверки без подписки: "scripts/mock_claude.cmd"
+  model: "claude-opus-5-5"      # всегда полное имя модели
+  effort: "high"
+  config_dir: ""                # пусто — вход в подписку, который уже сделан на сервере
+  timeout_seconds: 900
+  max_turns: 60
+  mcp_timeout_ms: 30000
+
+connect:
+  channel: "colleague"          # colleague — личные сообщения учётке «ГК Эксперт | ИИ-помощник»; line — линия поддержки
+  agent_login_env: "CONNECT_AGENT_LOGIN"   # логин этой учётки (канал десктопного приложения)
+  api_base_url: "https://push.1c-connect.com"
+  api_login_env: "CONNECT_API_LOGIN"
+  api_password_env: "CONNECT_API_PASSWORD"
+  webhook_token_env: "CONNECT_WEBHOOK_TOKEN"   # генерируется сам при первом запуске
+  line_id: ""                   # пусто — берётся из CONNECT_LINE_ID
+  bot_specialist_id: ""         # пусто — берётся из CONNECT_BOT_SPECIALIST_ID
+  webhook_mode: "tunnel"        # только channel: line. tunnel — HTTPS через Cloudflare без домена и сертификата
+  public_url: ""                # только для webhook_mode: url
+  ack_text: "Принял, работаю над ответом…"   # пусто — не отправлять
+  max_message_chars: 4000
+  file_download_hosts: ["buhphone.com", "1c-connect.com"]
+  max_attachment_mb: 20
+
+# API-мост: тот же помощник для внутренних сервисов (Langflow и т.п.)
+api:
+  clients:
+    - name: "langflow"
+      token_env: "ASSISTANT_API_TOKEN_LANGFLOW"
+      bases: "*"
+
+session:
+  idle_timeout_minutes: 60      # через час простоя разговор начинается заново
+  data_dir: ".data"             # SQLite (сессии, журнал) и рабочие папки
+
+users_path: "config/users.yaml"
+bases_path: "config/bases.yaml"
+
+knowledge_base:
+  root: "База знаний"
+  index_path: ".index/kb.sqlite3"
+  exclude:
+    - pattern: "обменные пункты количество касс.xlsx"
+      reason: "список клиентов с БИН — не для общей базы знаний"
+    - pattern: "*.xlsm"
+      reason: "шаблон отчётности с макросами; справочники кодов засоряют поиск"
+    - pattern: "!!! Руководство ПО Обменный пункт. 2024*"
+      reason: "старая версия — есть «Руководство … 2025»"

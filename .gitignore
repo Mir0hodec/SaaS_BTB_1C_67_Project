@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.data/
+.index/
+.claude-bot/
+logs/
+*.log
+*.sqlite3
+*.sqlite3-*
+*.tmp
+
+# Секреты — только в окружении или локальном .env
+.env
+.env.*
+!.env.example
+Доступы ИИ-помощника.docx
+tools/
+
+# Рабочие конфиги — в репозитории только *.example.yaml
+config/settings.yaml
+config/users.yaml
+config/bases.yaml
+
+# Документы компании (в т.ч. список клиентов с БИН)
+База знаний/
+
+# Бэкап старого бота: реальная переписка клиентов
+bilgir_backup_*.zip

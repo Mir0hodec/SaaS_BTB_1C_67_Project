@@ -1,0 +1,19 @@
+# Базы 1С. Базу в вопросе выбирают хэштегом: «#демо остатки по кассе».
+# id — только латиница: Claude Code вычищает кириллицу из имён инструментов.
+
+demo_base:
+  title: "Демо-база (Розница)"
+  tags: ["демо", "розница", "demo"]
+  mode: mock                                   # mock — демо-данные, http — боевая база
+  fixtures_dir: mcp_1c/fixtures/sample_base
+  code_dump_dir: mcp_1c/fixtures/sample_base/dump   # выгрузка конфигурации в файлы
+
+# Боевая база через read-only HTTP-сервис (контракт — в README):
+# acme_ut:
+#   title: "Акме — Управление торговлей"
+#   tags: ["акме", "acme"]
+#   mode: http
+#   url: "http://1c-server/acme_ut"
+#   auth_user: "ai_readonly"                   # отдельная учётка только на чтение
+#   auth_password: "${ACME_UT_PASSWORD}"       # из переменной окружения
+#   code_dump_dir: "D:/1c-dumps/acme_ut"
