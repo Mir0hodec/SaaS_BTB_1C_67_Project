@@ -1,0 +1,15 @@
+{
+  "index_path": "../.index/onec_code.sqlite3",
+  "log_path": "../logs/onec_index.log",
+  "repos": [
+    {"name": "base", "path": "D:/1c-dumps/base", "git_pull": true}
+  ],
+  "search": {
+    "default_limit": 8,
+    "max_limit": 20,
+    "max_output_chars": 12000,
+    "candidates": 400,
+    "weights": {"path": 3.0, "name": 10.0, "doc": 4.0, "body": 1.0},
+    "synonyms": {}
+  }
+}

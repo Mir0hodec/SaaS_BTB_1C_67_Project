@@ -17,7 +17,9 @@ logs/
 Доступы ИИ-помощника.docx
 tools/
 
-# Рабочие конфиги — в репозитории только *.example.yaml
+# Рабочие конфиги — в репозитории только *.example.yaml / *.example.json
+onec_rag/config.json
+onec_rag/.venv/
 config/settings.yaml
 config/users.yaml
 config/bases.yaml

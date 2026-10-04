@@ -4,7 +4,8 @@
 
 Запускает один вопрос с теми же флагами, что и бот, и показывает: какая
 версия CLI, какая модель, какие инструменты реально доступны агенту
-(должны быть только mcp__knowledge_base__* и mcp__files__*), подключились
+(должны быть только mcp__knowledge_base__*, mcp__files__* и, если настроен
+поиск по коду 1С, mcp__onec_code__*), подключились
 ли MCP-серверы и дошёл ли ответ. Тратит один небольшой запрос подписки.
 """
 from __future__ import annotations
@@ -40,7 +41,8 @@ def main() -> int:
                               target=work / "mcp.json")
     result = runner.run(question="Какие инструменты тебе доступны? Перечисли их имена одной строкой.",
                         session_id=str(uuid.uuid4()), is_new=True, cwd=work, mcp_config=config,
-                        allowed=allowed_tools(None, settings.counterparty_check_enabled))
+                        allowed=allowed_tools(None, settings.counterparty_check_enabled,
+                                              settings.onec_code.enabled))
     print("Инструменты в сессии:", ", ".join(result.tools) or "—")
     if result.is_error:
         print("ОШИБКА:", result.error)

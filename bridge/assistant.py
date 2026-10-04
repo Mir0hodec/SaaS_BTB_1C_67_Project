@@ -171,7 +171,8 @@ class Assistant:
             question=self._compose(job.user, base, question, attachments),
             session_id=session.session_id, is_new=session.is_new, cwd=workdir,
             mcp_config=mcp_config,
-            allowed=allowed_tools(base.id if base else None, self.settings.counterparty_check_enabled),
+            allowed=allowed_tools(base.id if base else None, self.settings.counterparty_check_enabled,
+                                  self.settings.onec_code.enabled),
         )
         return self._finish(job, base, question, result, outbox, started)
 
