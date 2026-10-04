@@ -11,6 +11,7 @@ param(
     [string]$RepoName = "base",      # short latin name, used in links: base/Documents/...:10-40
     [int]$IntervalMinutes = 10,
     [string]$TaskName = "OnecCodeIndex",
+    [switch]$Semantic,               # also install semantic (vector) search: extra packages + 135 MB model
     [switch]$NoTask,                 # do not touch Task Scheduler
     [switch]$CurrentUserOnly         # task runs only while this user is logged on (no password prompt)
 )
@@ -35,6 +36,11 @@ if (-not (Test-Path $py)) { & $python -m venv $venv; Ok "created $venv" } else {
 & $py -m pip install --disable-pip-version-check -q -r (Join-Path $here "requirements.txt")
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 Ok "package mcp installed"
+if ($Semantic) {
+    & $py -m pip install --disable-pip-version-check -q -r (Join-Path $here "requirements-semantic.txt")
+    if ($LASTEXITCODE -ne 0) { throw "pip install of semantic search packages failed" }
+    Ok "packages onnxruntime, tokenizers, sqlite-vec, numpy installed"
+}
 
 Step "Config"
 $config = Join-Path $here "config.json"
@@ -49,7 +55,8 @@ if (-not (Test-Path $config)) {
     $env:ONEC_SETUP_REPO_NAME = $RepoName
     $env:ONEC_SETUP_CONFIG = $config
     $env:ONEC_SETUP_EXAMPLE = Join-Path $here "config.example.json"
-    & $py -X utf8 -c "import json, os; c = json.load(open(os.environ['ONEC_SETUP_EXAMPLE'], encoding='utf-8')); c['repos'] = [{'name': os.environ['ONEC_SETUP_REPO_NAME'], 'path': os.environ['ONEC_SETUP_REPO_PATH'].replace(chr(92), '/'), 'git_pull': True}]; json.dump(c, open(os.environ['ONEC_SETUP_CONFIG'], 'w', encoding='utf-8'), ensure_ascii=False, indent=2)"
+    $env:ONEC_SETUP_SEMANTIC = if ($Semantic) { "1" } else { "" }
+    & $py -X utf8 -c "import json, os; c = json.load(open(os.environ['ONEC_SETUP_EXAMPLE'], encoding='utf-8')); c['repos'] = [{'name': os.environ['ONEC_SETUP_REPO_NAME'], 'path': os.environ['ONEC_SETUP_REPO_PATH'].replace(chr(92), '/'), 'git_pull': True}]; c['semantic']['enabled'] = bool(os.environ['ONEC_SETUP_SEMANTIC']); json.dump(c, open(os.environ['ONEC_SETUP_CONFIG'], 'w', encoding='utf-8'), ensure_ascii=False, indent=2)"
     if ($LASTEXITCODE -ne 0) { throw "could not write config.json" }
     Ok "created $config"
 } else { Ok "$config already exists (not changed)" }
@@ -60,6 +67,15 @@ if ($RepoPath -and (Test-Path -LiteralPath (Join-Path $RepoPath ".git")) -and (G
     & git -C $RepoPath config core.quotepath false
     Ok "core.longpaths=true, core.quotepath=false in $RepoPath"
 } else { Warn "skipped (no -RepoPath, no .git there, or git is not installed). The indexer itself handles long paths." }
+
+if ($Semantic) {
+    Step "Semantic search model (downloaded once, then used offline)"
+    $env:PYTHONUTF8 = "1"
+    & $py (Join-Path $here "onec_index.py") --config $config --download-model
+    if ($LASTEXITCODE -ne 0) { throw "model download failed. Copy the model folder manually (see README) and re-run." }
+    Warn "if config.json existed before this run, set semantic.enabled to true in it"
+    Warn "the first index build computes vectors for every procedure: expect minutes, not seconds"
+}
 
 Step "First index build"
 $sw = [Diagnostics.Stopwatch]::StartNew()

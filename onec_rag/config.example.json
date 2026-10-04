@@ -11,5 +11,12 @@
     "candidates": 400,
     "weights": {"path": 3.0, "name": 10.0, "doc": 4.0, "body": 1.0},
     "synonyms": {}
+  },
+  "semantic": {
+    "enabled": false,
+    "model_dir": "models/multilingual-e5-small",
+    "top_k": 50,
+    "weight": 0.6,
+    "threads": 0
   }
 }

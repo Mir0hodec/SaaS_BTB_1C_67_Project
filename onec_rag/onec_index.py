@@ -33,9 +33,13 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import onec_embed as emb  # noqa: E402  (сам модуль — только stdlib; тяжёлые пакеты грузит по требованию)
+
 DEFAULT_CONFIG = HERE / "config.json"
 CONFIG_ENV = "ONEC_RAG_CONFIG"
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 MAX_XML_BYTES = 5 * 1024 * 1024
 COMMIT_EVERY_FILES = 500
 
@@ -57,6 +61,7 @@ class Config:
     repos: list[Repo]
     log_path: Path | None
     search: dict
+    semantic: dict
 
     def repo(self, name: str) -> Repo | None:
         return next((r for r in self.repos if r.name == name), None)
@@ -95,11 +100,14 @@ def load_config(path: Path | None = None) -> Config:
             raise ValueError(f"config: имя репозитория «{name}» — только латиница, цифры, _ . -")
     search = {**SEARCH_DEFAULTS, **(raw.get("search") or {})}
     search["weights"] = {**SEARCH_DEFAULTS["weights"], **(search.get("weights") or {})}
+    semantic = {**emb.DEFAULTS, **(raw.get("semantic") or {})}
+    semantic["model_dir"] = rel(semantic["model_dir"])
     return Config(
         index_path=rel(raw.get("index_path", "../.index/onec_code.sqlite3")),
         repos=repos,
         log_path=rel(raw["log_path"]) if raw.get("log_path") else None,
         search=search,
+        semantic=semantic,
     )
 
 
@@ -534,7 +542,8 @@ CREATE TABLE IF NOT EXISTS files(
     mtime_ns INTEGER NOT NULL, size INTEGER NOT NULL, lines INTEGER NOT NULL,
     UNIQUE(repo, path));
 CREATE TABLE IF NOT EXISTS chunks(
-    id INTEGER PRIMARY KEY, file_id INTEGER NOT NULL REFERENCES files(id),
+    id INTEGER PRIMARY KEY AUTOINCREMENT,      -- номера не переиспользуются: на них ссылаются векторы
+    file_id INTEGER NOT NULL REFERENCES files(id),
     kind TEXT NOT NULL, object_type TEXT NOT NULL, object_name TEXT NOT NULL,
     object_lower TEXT NOT NULL, module_kind TEXT NOT NULL, sub_name TEXT NOT NULL,
     proc_name TEXT NOT NULL, proc_lower TEXT NOT NULL, is_export INTEGER NOT NULL,
@@ -551,19 +560,25 @@ def fold(text: str) -> str:
     return text.replace("ё", "е").replace("Ё", "Е")
 
 
-def connect_rw(index_path: Path) -> sqlite3.Connection:
-    index_path.parent.mkdir(parents=True, exist_ok=True)
+def _open(index_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(index_path), timeout=60)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=60000")
-    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    if "meta" in tables:
+    return conn
+
+
+def connect_rw(index_path: Path) -> sqlite3.Connection:
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = _open(index_path)
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='meta'").fetchone():
         row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         if not row or row[0] != SCHEMA_VERSION:
             log.info("схема индекса изменилась — индекс будет построен заново")
-            for t in ("chunks_fts", "chunks", "files", "meta"):
-                conn.execute(f"DROP TABLE IF EXISTS {t}")
+            conn.close()
+            for suffix in ("", "-wal", "-shm"):
+                Path(str(index_path) + suffix).unlink(missing_ok=True)
+            conn = _open(index_path)
     conn.executescript(SCHEMA)
     conn.execute("INSERT OR REPLACE INTO meta VALUES('schema_version', ?)", (SCHEMA_VERSION,))
     conn.commit()
@@ -694,6 +709,7 @@ def stats(conn: sqlite3.Connection, index_path: Path) -> dict:
         "chunks": one("SELECT count(*) FROM chunks"),
         "procedures": one("SELECT count(*) FROM chunks WHERE kind IN ('proc','func')"),
         "objects": one("SELECT count(*) FROM chunks WHERE kind='object'"),
+        "vectors": emb.vector_count(conn),
         "index_mb": round(size / 1024 / 1024, 1),
         "last_run": (conn.execute("SELECT value FROM meta WHERE key='last_run'").fetchone() or [None])[0],
     }
@@ -726,8 +742,18 @@ def run(cfg: Config, *, full: bool = False, pull: bool = True) -> dict:
         conn.execute("INSERT OR REPLACE INTO meta VALUES('last_run', ?)",
                      (datetime.now().isoformat(timespec="seconds"),))
         conn.commit()
+        semantic = None
+        if cfg.semantic["enabled"]:
+            # Поиск по словам уже обновлён и доступен боту; векторы досчитываются следом.
+            try:
+                embedder = emb.Embedder(cfg.semantic["model_dir"], int(cfg.semantic["max_tokens"]),
+                                        int(cfg.semantic["threads"]))
+                semantic = emb.embed_missing(conn, embedder, int(cfg.semantic["batch_size"]))
+            except emb.Unavailable as exc:
+                log.warning("смысловой поиск не обновлён: %s", exc)
+                semantic = {"error": str(exc)}
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        result = {"repos": repos, "changed": changed, **stats(conn, cfg.index_path),
+        result = {"repos": repos, "changed": changed, "semantic": semantic, **stats(conn, cfg.index_path),
                   "seconds": round(time.monotonic() - started, 1)}
     finally:
         conn.close()
@@ -752,6 +778,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--full", action="store_true", help="перестроить индекс с нуля")
     ap.add_argument("--no-pull", action="store_true", help="не делать git pull")
     ap.add_argument("--stats", action="store_true", help="показать состояние индекса и выйти")
+    ap.add_argument("--download-model", action="store_true", help="скачать модель смыслового поиска и выйти")
     args = ap.parse_args(argv)
     try:
         cfg = load_config(config_path(args.config))
@@ -760,6 +787,14 @@ def main(argv: list[str] | None = None) -> int:
         log.error("конфиг не прочитан: %s", exc)
         return 2
     _setup_logging(cfg)
+    if args.download_model:
+        try:
+            emb.download_model(cfg.semantic["model_dir"], cfg.semantic["model_url"])
+        except OSError as exc:
+            log.error("модель не скачана: %s. Можно скопировать каталог модели вручную: %s", exc,
+                      cfg.semantic["model_dir"])
+            return 1
+        return 0
     if args.stats:
         conn = connect_rw(cfg.index_path)
         try:

@@ -107,10 +107,13 @@ def _expect_text(expect: dict | list) -> str:
     return " | ".join(f"{i.get('path', '').strip('/')}:{i.get('proc', '')}".strip(":") for i in items)
 
 
-def evaluate(conn, questions: list[dict], search_cfg: dict, depth: int = 8) -> tuple[list[dict], dict]:
+def evaluate(conn, questions: list[dict], cfg: ix.Config, depth: int = 8, *, semantic: bool | None = None,
+             variants: bool = True) -> tuple[list[dict], dict]:
+    """semantic=None — как в конфиге; variants=False — только сам вопрос, без формулировок из файла."""
     rows = []
     for item in questions:
-        hits, _ = mcp_search.search_chunks(conn, item["q"], depth, search_cfg)
+        queries = [item["q"], *(item.get("variants", []) if variants else [])]
+        hits, _, _ = mcp_search.hybrid_search(conn, cfg, queries, depth, semantic=semantic)
         rank = next((i for i, h in enumerate(hits, 1) if is_hit(h, item["expect"])), None)
         rows.append({**item, "rank": rank, "top1": f"{hits[0].path}:{hits[0].proc_name}" if hits else "—"})
     n = len(rows) or 1
@@ -146,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--generate", type=int, metavar="N", help="сгенерировать N вопросов из индекса и выйти")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--json", action="store_true", help="вывести итог в JSON")
+    ap.add_argument("--lexical", action="store_true", help="только поиск по словам (без смыслового слоя)")
+    ap.add_argument("--no-variants", action="store_true", help="не использовать поле variants из файла вопросов")
     ap.add_argument("--min-top8", type=float, default=0.0, help="код возврата 1, если top-8 ниже порога (0..1)")
     args = ap.parse_args(argv)
 
@@ -166,7 +171,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Нет файла вопросов {questions_path}. Сначала: eval.py --generate 30", file=sys.stderr)
             return 2
         questions = json.loads(questions_path.read_text(encoding="utf-8-sig"))
-        rows, summary = evaluate(conn, questions, cfg.search)
+        rows, summary = evaluate(conn, questions, cfg, semantic=False if args.lexical else None,
+                                 variants=not args.no_variants)
     finally:
         conn.close()
     if args.json:

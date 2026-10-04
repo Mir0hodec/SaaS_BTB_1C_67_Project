@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import onec_embed as emb  # noqa: E402
 import onec_index as ix  # noqa: E402
 
 # --- обработка запроса ---
@@ -239,19 +240,19 @@ def snippet(hit: Hit, terms: list[Term], max_lines: int = 6, width: int = 160) -
         low = line.lower()
         if i not in picked and any(v in low for v in variants):
             picked.append(i)
-    if not picked:
-        picked = list(range(min(len(lines), 3)))
+    if len(picked) < 2:                        # найдено по смыслу, слов запроса в тексте нет
+        picked = sorted(set(picked) | set(range(min(len(lines), 3))))
     return [f"{hit.line_start + i}: {lines[i].strip()[:width]}" for i in sorted(picked)]
 
 
-def format_hits(hits: list[Hit], terms: list[Term], max_chars: int) -> str:
-    if not terms:
-        return "В запросе нет слов для поиска (нужны слова от 3 букв: имя объекта, процедуры или описание)."
+def format_hits(hits: list[Hit], terms: list[Term], max_chars: int, note: str = "") -> str:
     words = " | ".join(t.variants[0] for t in terms)
     if not hits:
+        if not terms:
+            return "В запросе нет слов для поиска (нужны слова от 3 букв: имя объекта, процедуры или описание)."
         return (f"Ничего не найдено (искал: {words}). Попробуй другие слова, имя объекта или процедуры. "
                 "Если не находится — так и скажи, не выдумывай.")
-    out = [f"Найдено: {len(hits)} (искал: {words}). Перед ответом прочитай код через get_module."]
+    out = [f"Найдено: {len(hits)} (искал: {words}{note}). Перед ответом прочитай код через get_module."]
     used = len(out[0])
     for n, hit in enumerate(hits, 1):
         block = "\n".join([f"{n}. {hit.link}", f"   {hit.title}", *("   " + s for s in snippet(hit, terms))])
@@ -261,6 +262,80 @@ def format_hits(hits: list[Hit], terms: list[Term], max_chars: int) -> str:
         out.append(block)
         used += len(block) + 1
     return "\n".join(out)
+
+
+# --- смысловой поиск и слияние ---
+
+_HIT_SELECT = """
+SELECT c.id, f.repo, f.path, c.kind, c.object_type, c.object_name, c.module_kind, c.sub_name, c.proc_name,
+       c.is_export, c.line_start, c.line_end, chunks_fts.body
+FROM chunks c JOIN files f ON f.id = c.file_id JOIN chunks_fts ON chunks_fts.rowid = c.id WHERE c.id IN ({})
+"""
+_RRF_K = 60
+_VARIANT_WEIGHT = 0.7      # формулировки-догадки весят меньше исходного вопроса
+_LEXICAL_DEPTH = 50
+_embedder: emb.Embedder | None = None
+
+
+def get_embedder(cfg: ix.Config) -> emb.Embedder:
+    """Модель грузится один раз на процесс — при первом поиске."""
+    global _embedder
+    if _embedder is None:
+        _embedder = emb.Embedder(cfg.semantic["model_dir"], int(cfg.semantic["max_tokens"]),
+                                 int(cfg.semantic["threads"]))
+    return _embedder
+
+
+def _hits_by_ids(conn: sqlite3.Connection, ids: list[int]) -> list[Hit]:
+    if not ids:
+        return []
+    found = {r[0]: Hit(r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], bool(r[9]), r[10], r[11], r[12], 0.0)
+             for r in conn.execute(_HIT_SELECT.format(",".join("?" * len(ids))), ids)}
+    return [found[i] for i in ids if i in found]      # вектор чанка, удалённого после расчёта, пропускаем
+
+
+def hybrid_search(conn: sqlite3.Connection, cfg: ix.Config, queries: list[str], limit: int,
+                  semantic: bool | None = None) -> tuple[list[Hit], list[Term], str]:
+    """Поиск по нескольким формулировкам сразу: для каждой — список по словам и (если
+    включён смысловой слой) список по смыслу; списки сливаются по местам (reciprocal
+    rank fusion). Возвращает результаты, слова для подсветки и пометку для вывода."""
+    queries = [q.strip() for q in dict.fromkeys(queries) if q and q.strip()][:8]
+    use_semantic = cfg.semantic["enabled"] if semantic is None else semantic
+    note = ""
+    embedder = None
+    if use_semantic:
+        try:
+            if not emb.has_vectors(conn):
+                raise emb.Unavailable("векторы ещё не посчитаны (onec_index.py)")
+            emb.load_vec(conn)
+            embedder = get_embedder(cfg)
+        except emb.Unavailable as exc:      # поиск по словам работает и без смыслового слоя
+            note = f"; смысловой поиск недоступен: {exc}"
+    scores: dict[tuple, float] = {}
+    best: dict[tuple, Hit] = {}
+    terms: list[Term] = []
+
+    def add(hits: list[Hit], weight: float) -> None:
+        for rank, hit in enumerate(hits, 1):
+            key = (hit.repo, hit.path, hit.line_start, hit.kind)
+            scores[key] = scores.get(key, 0.0) + weight / (_RRF_K + rank)
+            best.setdefault(key, hit)
+
+    for n, query in enumerate(queries):
+        weight = 1.0 if n == 0 else _VARIANT_WEIGHT
+        hits, q_terms = search_chunks(conn, query, _LEXICAL_DEPTH, cfg.search)
+        terms += [t for t in q_terms if t.variants[0] not in {x.variants[0] for x in terms}]
+        add(hits, weight)
+        if embedder is not None:
+            ids = emb.knn(conn, embedder.query(query), int(cfg.semantic["top_k"]))
+            add(_hits_by_ids(conn, ids), weight * float(cfg.semantic["weight"]))
+    ranked = sorted(scores, key=lambda k: -scores[k])[:limit]
+    result = []
+    for key in ranked:
+        hit = best[key]
+        hit.score = scores[key]
+        result.append(hit)
+    return result, terms, note
 
 
 # --- чтение модулей и объектов ---
@@ -468,16 +543,23 @@ def build_server():
             conn.close()
 
     @mcp.tool()
-    def search_1c(query: str, limit: int = 8) -> str:
+    def search_1c(query: str, limit: int = 8, variants: list[str] | None = None) -> str:
         """Поиск по коду конфигурации 1С: процедуры, функции, модули и структура
-        объектов. query — слова по-русски («заполнение табличной части товары»),
-        имя процедуры, объекта или «ОбщегоНазначения.ЗначениеРеквизитаОбъекта».
-        Формы слов и окончания учитываются. Возвращает ссылки путь:строки и
-        строки с совпадениями; сам код читай через get_module."""
+        объектов. query — вопрос или слова по-русски («заполнение табличной части
+        товары»), имя процедуры, объекта или «ОбщегоНазначения.ЗначениеРеквизитаОбъекта».
+
+        variants — ОБЯЗАТЕЛЬНО передавай 3–6 других формулировок того же вопроса:
+        синонимы и то, как это скорее всего названо в коде 1С. Например, для
+        «как сгенерировать пароль»: ["создать пароль", "новый пароль пользователя",
+        "СоздатьПароль", "СгенерироватьПароль", "НовыйПароль"]. Результаты по всем
+        формулировкам объединяются, поэтому догадки не мешают, а промах одной
+        формулировки закрывается другой.
+
+        Возвращает ссылки путь:строки и строки с совпадениями; сам код читай через get_module."""
         def run(conn, cfg):
             n = max(1, min(int(limit or cfg.search["default_limit"]), int(cfg.search["max_limit"])))
-            hits, terms = search_chunks(conn, query, n, cfg.search)
-            return format_hits(hits, terms, int(cfg.search["max_output_chars"]))
+            hits, terms, note = hybrid_search(conn, cfg, [query, *(variants or [])], n)
+            return format_hits(hits, terms, int(cfg.search["max_output_chars"]), note)
         return call(run)
 
     @mcp.tool()

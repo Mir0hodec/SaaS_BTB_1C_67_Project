@@ -273,7 +273,8 @@ def test_mcp_server_over_stdio(repo_root, tmp_path, dump):
             await s.initialize()
             tools = sorted(t.name for t in (await s.list_tools()).tools)
             calls = [await s.call_tool(name, args) for name, args in [
-                ("search_1c", {"query": "где считается пеня", "limit": 3}),
+                ("search_1c", {"query": "штрафные санкции за просрочку", "limit": 3,
+                               "variants": ["расчет пени", "РассчитатьПеню"]}),
                 ("get_module", {"path": "РасчетПени", "procedure": "РассчитатьПеню"}),
                 ("find_object", {"name": "РеализацияТоваров"}),
                 ("get_module", {"path": "НетТакогоМодуля"}),
@@ -301,3 +302,86 @@ def test_word_boundary_and_description(index):
     assert doc.startswith("Рассчитывает пеню по просроченной задолженности") and "//" not in doc
     hits, _ = om.search_chunks(conn, "просроченная задолженность контрагента", 3)
     assert hits[0].proc_name == "РассчитатьПеню"
+
+
+def test_variants_are_fused(index):
+    """Модель передаёт несколько формулировок; промах одной закрывается другой."""
+    conn, cfg = index
+    hits, _, _ = om.hybrid_search(conn, cfg, ["начисление штрафных санкций"], 5)
+    assert not hits or hits[0].proc_name != "РассчитатьПеню"            # слов вопроса в коде нет
+    hits, terms, note = om.hybrid_search(
+        conn, cfg, ["начисление штрафных санкций", "расчет пени", "РассчитатьПеню", "НачислитьШтраф"], 5)
+    assert hits[0].proc_name == "РассчитатьПеню" and note == ""
+    assert "рассчитатьпеню" in [t.variants[0] for t in terms]
+
+
+def test_semantic_layer_is_optional(dump):
+    """Смысловой слой включён, но модели нет: индекс строится, поиск по словам работает."""
+    raw = json.loads(dump.read_text(encoding="utf-8-sig"))
+    raw["semantic"] = {"enabled": True, "model_dir": "нет такой модели"}
+    dump.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    cfg = ix.load_config(dump)
+    result = ix.run(cfg, pull=False)
+    assert "error" in result["semantic"] and result["vectors"] == 0 and result["procedures"] == 5
+    conn = om.open_ro(cfg.index_path)
+    try:
+        hits, terms, note = om.hybrid_search(conn, cfg, ["где считается пеня"], 3)
+        assert hits[0].proc_name == "РассчитатьПеню" and "смысловой поиск недоступен" in note
+        assert "смысловой поиск недоступен" in om.format_hits(hits, terms, 12000, note)
+    finally:
+        conn.close()
+
+
+class _FakeEmbedder:
+    """Вместо модели: вектор — частоты букв. Проверяем хранение и слияние, а не качество модели."""
+    dim = 64
+
+    def embed(self, texts, prefix):
+        import numpy as np
+        out = np.zeros((len(texts), self.dim), dtype=np.float32)
+        for i, text in enumerate(texts):
+            for ch in text.lower():
+                if ch.isalpha():
+                    out[i, ord(ch) % self.dim] += 1
+            out[i] /= max(float(np.linalg.norm(out[i])), 1e-9)
+        return out
+
+    def query(self, text):
+        return self.embed([text], "query: ")[0].tobytes()
+
+
+def test_vectors_stored_in_same_file(dump, monkeypatch):
+    pytest.importorskip("sqlite_vec")
+    pytest.importorskip("numpy")
+    import onec_embed as emb
+
+    cfg = ix.load_config(dump)
+    ix.run(cfg, pull=False)
+    conn = ix.connect_rw(cfg.index_path)
+    try:
+        first = emb.embed_missing(conn, _FakeEmbedder(), batch_size=2)
+        total = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
+        assert first["embedded"] == total == emb.vector_count(conn)
+        assert emb.embed_missing(conn, _FakeEmbedder())["embedded"] == 0          # повторно не считаем
+    finally:
+        conn.close()
+    # Файл изменился: старые векторы убираются, новые досчитываются.
+    (cfg.repos[0].path / "Documents/РеализацияТоваров/Ext/ObjectModule.bsl").unlink()
+    ix.run(cfg, pull=False)
+    conn = ix.connect_rw(cfg.index_path)
+    try:
+        again = emb.embed_missing(conn, _FakeEmbedder())
+        assert again["removed"] == 4 and emb.vector_count(conn) == total - 4
+    finally:
+        conn.close()
+
+    cfg.semantic["enabled"] = True
+    monkeypatch.setattr(om, "get_embedder", lambda cfg: _FakeEmbedder())
+    conn = om.open_ro(cfg.index_path)                                             # MCP: только чтение
+    try:
+        hits, _, note = om.hybrid_search(conn, cfg, ["квантовая телепортация"], 3)
+        assert note == "" and len(hits) == 3          # слов запроса в коде нет — результаты дал смысловой список
+        hits, _, _ = om.hybrid_search(conn, cfg, ["где считается пеня"], 3)
+        assert hits[0].proc_name == "РассчитатьПеню"
+    finally:
+        conn.close()

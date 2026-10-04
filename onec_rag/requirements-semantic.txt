@@ -1,0 +1,5 @@
+# Смысловой (векторный) слой поиска — необязательный. Ставится: install.ps1 -Semantic
+onnxruntime>=1.17
+tokenizers>=0.15
+sqlite-vec>=0.1.6
+numpy>=1.26

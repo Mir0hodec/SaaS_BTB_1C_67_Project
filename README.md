@@ -95,7 +95,7 @@ powershell -ExecutionPolicy Bypass -File setup.ps1
 powershell -ExecutionPolicy Bypass -File onec_rag\install.ps1 -RepoPath "D:\1c-dumps\base" -RepoName base
 ```
 
-Индекс обновляет Планировщик задач (`git pull` + доиндексация раз в 10 минут), постоянных процессов нет. Подробно — [onec_rag/README.md](onec_rag/README.md). Старый `search_code` (подстрока по `code_dump_dir` выбранной базы) оставлен как запасной.
+Смысловой поиск (векторы в том же файле, модель на CPU) — тот же скрипт с ключом `-Semantic`. Индекс обновляет Планировщик задач (`git pull` + доиндексация раз в 10 минут), постоянных процессов нет. Подробно — [onec_rag/README.md](onec_rag/README.md). Старый `search_code` (подстрока по `code_dump_dir` выбранной базы) оставлен как запасной.
 
 ## Проверка контрагента
 
@@ -121,7 +121,7 @@ python counterparty_check_client.py 750710450345
 python -m pytest tests
 ```
 
-74 теста. Покрыто:
+77 тестов. Покрыто:
 - весь путь вебхук → очередь → Claude (заглушка) → ответ и файлы в Коннект;
 - дубли, эхо бота, чужие пользователи;
 - вложение, а потом вопрос к нему;
