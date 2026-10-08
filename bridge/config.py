@@ -100,6 +100,17 @@ class KnowledgeBaseSettings:
 
 
 @dataclass
+class OnecCodeSettings:
+    """Поиск по коду 1С (onec_rag): индекс строит Планировщик задач, см. onec_rag/README.md."""
+    config_path: Path
+    python: str = ""                 # пусто — onec_rag/.venv, если он есть, иначе Python моста
+
+    @property
+    def enabled(self) -> bool:
+        return self.config_path.is_file()
+
+
+@dataclass
 class Settings:
     claude: ClaudeSettings
     connect: ConnectSettings
@@ -110,6 +121,8 @@ class Settings:
     data_dir: Path
     idle_timeout_minutes: int = 60
     python: str = sys.executable
+    onec_code: OnecCodeSettings = field(
+        default_factory=lambda: OnecCodeSettings(REPO_ROOT / "onec_rag" / "config.json"))
 
     @property
     def counterparty_check_enabled(self) -> bool:
@@ -131,6 +144,7 @@ class Settings:
             raw = yaml.safe_load(f) or {}
         kb = raw.get("knowledge_base", {})
         session = raw.get("session", {})
+        code = raw.get("onec_code", {}) or {}
         return Settings(
             claude=ClaudeSettings(**raw.get("claude", {})),
             connect=ConnectSettings(**raw.get("connect", {})),
@@ -145,4 +159,6 @@ class Settings:
             data_dir=repo_path(session.get("data_dir", ".data")),
             idle_timeout_minutes=session.get("idle_timeout_minutes", 60),
             python=raw.get("python") or sys.executable,
+            onec_code=OnecCodeSettings(repo_path(code.get("config_path", "onec_rag/config.json")),
+                                       code.get("python", "")),
         )

@@ -37,6 +37,10 @@ session:
   idle_timeout_minutes: 60      # через час простоя разговор начинается заново
   data_dir: ".data"             # SQLite (сессии, журнал) и рабочие папки
 
+# Поиск по коду 1С (onec_rag/README.md). Нет файла конфига — инструменты не подключаются.
+onec_code:
+  config_path: "onec_rag/config.json"
+
 users_path: "config/users.yaml"
 bases_path: "config/bases.yaml"
 
