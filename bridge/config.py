@@ -59,7 +59,7 @@ class ConnectSettings:
     # Приём личных сообщений: history — опрос SOAP-истории (работает с новым
     # «1C-Connect Desktop»), pipe — «API приложений» старого клиента.
     receive: str = "history"
-    history_colleagues: list[str] = field(default_factory=list)   # пусто — вся переписка бота одним запросом
+    history_colleagues: list[str] = field(default_factory=list)   # UUID сотрудников: запрос истории на каждого
     history_interval_seconds: float = 75.0   # лимит API — 100 запросов в час на всех
     history_hours: float = 6.0
     webhook_mode: str = "tunnel"     # tunnel — HTTPS через Cloudflare без домена; url — свой адрес

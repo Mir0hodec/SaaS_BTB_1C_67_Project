@@ -97,9 +97,20 @@ def test_poll_seeds_existing_then_emits_only_new():
             return soap_response(code="OK", data="")
         return responses.pop(0)
 
-    poll(BOT, [], got.append, stop, fetch=fetch, interval=0)
+    poll(BOT, [IGOR], got.append, stop, fetch=fetch, interval=0)
     assert [m.text for m in got] == ["новый вопрос", "ответ"]   # ответ бота отсекает приёмник (author != colleague)
-    assert set(calls) == {""}
+    assert set(calls) == {IGOR}
+
+
+def test_poll_without_colleagues_does_not_call_api():
+    calls = []
+    poll(BOT, [], lambda m: None, threading.Event(), fetch=lambda *a: calls.append(a), interval=0)
+    assert calls == []
+
+
+def test_param_error_is_reported():
+    with pytest.raises(HistoryError, match="PARAM_NOT_EXIST"):
+        parse_response(soap_response(code="PARAM_NOT_EXIST", data="SPECIALIST2ID"), BOT)
 
 
 def test_poll_round_robin_pairs():

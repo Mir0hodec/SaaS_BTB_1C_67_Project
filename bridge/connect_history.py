@@ -10,10 +10,11 @@
   <table>… <td colspan=3><b>2026-10-04</b></td> …
            <tr><td>Автор</td><td>Текст</td><td>16:30:10</td></tr> …
 
-Лимит API — 100 запросов в час днём (OUT_OF_LIMIT «limit reached»), его делят
-все, кто опрашивает этой учёткой API. Поэтому запросы идут не чаще interval
-секунд: один запрос без Specialist2ID (вся переписка бота) либо по очереди по
-парам из списка colleagues.
+Specialist2ID обязателен (без него — PARAM_NOT_EXIST), то есть запрос отдаёт
+переписку одной пары. Лимит API — 100 запросов в час днём (OUT_OF_LIMIT
+«limit reached»), его делят все, кто опрашивает этой учёткой API. Поэтому
+запросы идут не чаще interval секунд по очереди по парам из colleagues:
+задержка ответа — до interval × число сотрудников.
 
 Идентификатора сообщения в истории нет — он собирается из пары, даты, времени,
 автора и текста. При первом опросе после запуска всё, что уже было в истории,
@@ -137,6 +138,8 @@ def parse_response(xml_bytes: bytes, bot_id: str) -> list[ColleagueMessage]:
             for name in sorted(z.namelist()):
                 if name.lower().endswith(".html"):
                     messages += parse_chat_html(name, z.read(name).decode("utf-8", "ignore"), bot_id)
+    if code.startswith("PARAM_") or code.startswith("ERROR"):
+        raise HistoryError(f"ResultCode={code} {props.get('ResultData', '')[:200]}".strip())
     if not blobs and code and code not in ("OK", "SUCCESS", "0"):
         log.info("история: ResultCode=%s %s", code, props.get("ResultData", "")[:200])
     return messages
@@ -178,9 +181,12 @@ class HistoryClient:
 def poll(bot_id: str, colleagues: Iterable[str], on_message: Callable[[ColleagueMessage], None],
          stop: StopFlag, *, fetch: Callable[[str, str, float], bytes], interval: float = 75.0,
          hours: float = 6.0) -> None:
-    """Опрашивать историю до stop.set(): один запрос раз в interval секунд.
-    colleagues пустой — один запрос на всю переписку бота, иначе по очереди по парам."""
-    targets = list(colleagues) or [""]
+    """Опрашивать историю до stop.set(): один запрос раз в interval секунд,
+    по очереди по парам «бот — сотрудник из colleagues»."""
+    targets = list(colleagues)
+    if not targets:
+        log.error("история 1С-Коннект: не задан connect.history_colleagues (UUID сотрудников) — приём не запущен")
+        return
     seeded: set[str] = set()
     known: set[str] = set()
     limit_logged_at: datetime | None = None
