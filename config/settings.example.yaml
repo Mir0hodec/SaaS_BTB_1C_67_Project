@@ -12,7 +12,10 @@ claude:
 
 connect:
   channel: "colleague"          # colleague — личные сообщения учётке «ГК Эксперт | ИИ-помощник»; line — линия поддержки
-  agent_login_env: "CONNECT_AGENT_LOGIN"   # логин этой учётки (канал десктопного приложения)
+  receive: "history"            # history — опрос SOAP-истории чатов (новый 1C-Connect Desktop); pipe — «API приложений» старого клиента
+  history_colleagues: []        # UUID сотрудников; пусто — вся переписка бота одним запросом
+  history_interval_seconds: 75  # лимит API 100 запросов в час — на всех, кто ходит этой учёткой
+  agent_login_env: "CONNECT_AGENT_LOGIN"   # только для receive: pipe — логин учётки в десктопном приложении
   api_base_url: "https://push.1c-connect.com"
   api_login_env: "CONNECT_API_LOGIN"
   api_password_env: "CONNECT_API_PASSWORD"

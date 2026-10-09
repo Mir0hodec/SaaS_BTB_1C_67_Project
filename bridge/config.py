@@ -56,6 +56,12 @@ class ConnectSettings:
     request_timeout_seconds: int = 60
     file_download_hosts: list[str] = field(default_factory=lambda: ["buhphone.com", "1c-connect.com"])
     max_attachment_mb: int = 20
+    # Приём личных сообщений: history — опрос SOAP-истории (работает с новым
+    # «1C-Connect Desktop»), pipe — «API приложений» старого клиента.
+    receive: str = "history"
+    history_colleagues: list[str] = field(default_factory=list)   # пусто — вся переписка бота одним запросом
+    history_interval_seconds: float = 75.0   # лимит API — 100 запросов в час на всех
+    history_hours: float = 6.0
     webhook_mode: str = "tunnel"     # tunnel — HTTPS через Cloudflare без домена; url — свой адрес
     public_url: str = ""             # для webhook_mode: url, например https://bot.example.kz
 

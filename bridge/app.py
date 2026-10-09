@@ -31,7 +31,7 @@ ensure_utf8_stdio()
 from fastapi import FastAPI, Header, HTTPException, Request  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from bridge import connect_pipe  # noqa: E402
+from bridge import connect_history, connect_pipe  # noqa: E402
 from bridge.access import User, resolve_user  # noqa: E402
 from bridge.connect_adapter import ConnectAdapter  # noqa: E402
 from bridge.connect_pipe import ColleagueMessage  # noqa: E402
@@ -107,7 +107,15 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
 
     def start_colleague_listener() -> None:
         source = colleague_source
-        if source is None:
+        if source is None and cs.receive == "history":
+            if not (cs.bot_specialist_id and cs.login and cs.password):
+                log.error("приём из истории: нужны CONNECT_BOT_SPECIALIST_ID и логин/пароль API — не запущен")
+                return
+            client = connect_history.HistoryClient(cs.login, cs.password, timeout=cs.request_timeout_seconds)
+            source = lambda on_msg, stop: connect_history.poll(  # noqa: E731
+                cs.bot_specialist_id, cs.history_colleagues, on_msg, stop, fetch=client.fetch,
+                interval=cs.history_interval_seconds, hours=cs.history_hours)
+        elif source is None:
             if not cs.agent_login:
                 log.error("режим личных сообщений: не задан %s — приём сообщений не запущен", cs.agent_login_env)
                 return
