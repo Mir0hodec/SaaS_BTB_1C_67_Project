@@ -138,10 +138,9 @@ def parse_response(xml_bytes: bytes, bot_id: str) -> list[ColleagueMessage]:
             for name in sorted(z.namelist()):
                 if name.lower().endswith(".html"):
                     messages += parse_chat_html(name, z.read(name).decode("utf-8", "ignore"), bot_id)
-    if code.startswith("PARAM_") or code.startswith("ERROR"):
+    if code and code not in ("SUCCESS", "OK", "0"):
+        # PARAM_NOT_EXIST, ACCESS_DENIED («нет доступа к просмотру переписки» — права учётки API) и т.п.
         raise HistoryError(f"ResultCode={code} {props.get('ResultData', '')[:200]}".strip())
-    if not blobs and code and code not in ("OK", "SUCCESS", "0"):
-        log.info("история: ResultCode=%s %s", code, props.get("ResultData", "")[:200])
     return messages
 
 
@@ -203,7 +202,7 @@ def poll(bot_id: str, colleagues: Iterable[str], on_message: Callable[[Colleague
             stop.wait(interval)
             continue
         except (requests.RequestException, HistoryError, ET.ParseError, zipfile.BadZipFile) as exc:
-            log.warning("история 1С-Коннект: %s", exc)
+            log.warning("история 1С-Коннект (%s): %s", target, exc)
             stop.wait(interval)
             continue
         if target not in seeded:

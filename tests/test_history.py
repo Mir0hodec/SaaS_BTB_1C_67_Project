@@ -28,7 +28,7 @@ def chat_html(names, rows):
             f'<col width="15%">{body}</tbody></table></body></html>')
 
 
-def soap_response(files=None, code="OK", data=""):
+def soap_response(files=None, code="SUCCESS", data=""):
     props = f'<Property name="ResultCode"><Value>{code}</Value></Property>'
     if files is not None:
         buf = io.BytesIO()
@@ -68,7 +68,7 @@ def test_parse_response_several_pairs_and_limit():
     assert {(m.colleague_id, m.text) for m in msgs} == {(IGOR, "привет"), (OLGA, "как начислить пени")}
     with pytest.raises(LimitReached):
         parse_response(soap_response(code="OUT_OF_LIMIT", data="limit reached"), BOT)
-    assert parse_response(soap_response(code="OK", data=""), BOT) == []
+    assert parse_response(soap_response(code="SUCCESS", data=""), BOT) == []
     with pytest.raises(HistoryError):
         parse_chat_html("bad.html", "<p></p>", BOT)
 
@@ -94,7 +94,7 @@ def test_poll_seeds_existing_then_emits_only_new():
         calls.append(colleague)
         if not responses:
             stop.set()
-            return soap_response(code="OK", data="")
+            return soap_response(code="SUCCESS", data="")
         return responses.pop(0)
 
     poll(BOT, [IGOR], got.append, stop, fetch=fetch, interval=0)
@@ -108,9 +108,11 @@ def test_poll_without_colleagues_does_not_call_api():
     assert calls == []
 
 
-def test_param_error_is_reported():
+def test_param_and_access_errors_are_reported():
     with pytest.raises(HistoryError, match="PARAM_NOT_EXIST"):
         parse_response(soap_response(code="PARAM_NOT_EXIST", data="SPECIALIST2ID"), BOT)
+    with pytest.raises(HistoryError, match="ACCESS_DENIED"):
+        parse_response(soap_response(code="ACCESS_DENIED", data="Отсутствует доступ"), BOT)
 
 
 def test_poll_round_robin_pairs():
@@ -120,7 +122,7 @@ def test_poll_round_robin_pairs():
         calls.append(colleague)
         if len(calls) >= 4:
             stop.set()
-        return soap_response(code="OK", data="")
+        return soap_response(code="SUCCESS", data="")
 
     poll(BOT, [IGOR, OLGA], lambda m: None, stop, fetch=fetch, interval=0)
     assert calls == [IGOR, OLGA, IGOR, OLGA]
