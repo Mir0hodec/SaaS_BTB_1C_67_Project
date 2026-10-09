@@ -100,6 +100,7 @@ def test_two_colleagues_histories_do_not_mix(repo_root, tmp_path, monkeypatch):
     s.data_dir = tmp_path / "data"
     s.knowledge_base.root, s.knowledge_base.index_path = tmp_path, tmp_path / "kb.sqlite3"
     s.users_path = tmp_path / "users.yaml"
+    s.bases_path = repo_root / "config" / "bases.example.yaml"
     s.users_path.write_text("allow_all: true\ndefault_bases: '*'\n", encoding="utf-8")
     s.connect.channel, s.connect.bot_specialist_id = "colleague", BOT
 
@@ -149,6 +150,7 @@ def test_http_json_receiver(repo_root, tmp_path, monkeypatch):
     s.data_dir = tmp_path / "data"
     s.knowledge_base.root, s.knowledge_base.index_path = tmp_path, tmp_path / "kb.sqlite3"
     s.users_path = tmp_path / "users.yaml"
+    s.bases_path = repo_root / "config" / "bases.example.yaml"
     s.users_path.write_text("allow_all: true\n", encoding="utf-8")
     s.connect.bot_specialist_id = BOT
     fake = FakeConnect()
