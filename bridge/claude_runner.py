@@ -109,6 +109,7 @@ class ClaudeRunner:
         env = {k: v for k, v in os.environ.items() if k not in drop}
         env["PYTHONUTF8"] = "1"
         env["MCP_TIMEOUT"] = str(self.settings.claude.mcp_timeout_ms)
+        env["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false"   # коннекторы аккаунта claude.ai (Docs и т.п.) боту не нужны
         if self.settings.claude.config_dir:
             env["CLAUDE_CONFIG_DIR"] = self.settings.claude.config_dir
         return env
@@ -121,6 +122,7 @@ class ClaudeRunner:
             "--model", c.model,
             "--permission-mode", "dontAsk",
             "--mcp-config", str(mcp_config),
+            "--strict-mcp-config",
             "--allowedTools", ",".join(allowed),
             "--disallowedTools", ",".join(BUILTIN_TOOLS_TO_REMOVE),
             "--append-system-prompt-file", str(SYSTEM_PROMPT_FILE),

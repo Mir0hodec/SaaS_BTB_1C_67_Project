@@ -23,6 +23,10 @@ BUILTIN_TOOLS_TO_REMOVE = [
     "Bash", "PowerShell", "BashOutput", "KillShell", "Monitor",
     "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Glob", "Grep", "LS",
     "WebFetch", "WebSearch", "Agent", "Task", "Skill", "SlashCommand",
+    # агенты, расписания, удалённые запуски, уведомления, рабочие копии — боту не нужны
+    "SendMessage", "ListAgents", "RemoteTrigger", "PushNotification", "ScheduleWakeup",
+    "CronCreate", "CronDelete", "CronList", "EnterWorktree", "ExitWorktree", "DesignSync",
+    "ReportFindings", "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
 ]
 
 
