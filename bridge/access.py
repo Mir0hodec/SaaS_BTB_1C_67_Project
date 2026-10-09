@@ -51,6 +51,8 @@ def load_users(path: Path) -> dict[str, User]:
 def resolve_user(path: Path, user_id: str) -> User | None:
     """Сотрудник по user_id 1С-Коннект. При allow_all — любой, кто пишет в линию."""
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if user_id in {str(x) for x in raw.get("deny") or []}:
+        return None   # например, сотрудник, которому пока отвечает другой бот
     known = load_users(path).get(user_id)
     if known:
         return known

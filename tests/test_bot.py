@@ -267,3 +267,11 @@ def test_knowledge_base_reindexes_when_folder_changes(settings):
     assert w.rebuild_if_changed(kb.root, kb.exclude) is None            # без изменений — не трогает
     assert w.rebuild_if_changed(kb.root, []) is not None                # поменяли исключения — пересборка
     w.close()
+
+
+def test_deny_list_overrides_allow_all(tmp_path):
+    from bridge.access import resolve_user
+    path = tmp_path / "users.yaml"
+    path.write_text("allow_all: true\ndeny: ['igor-uuid']\n", encoding="utf-8")
+    assert resolve_user(path, "igor-uuid") is None
+    assert resolve_user(path, "olga-uuid").name == "Сотрудник"
