@@ -3,7 +3,7 @@
     python scripts/start.py
 
 1. Если нет токена вебхука — генерирует и дописывает в .env.
-2. Поднимает мост (uvicorn на 127.0.0.1:8000, наружу порт не открывается).
+2. Поднимает мост (uvicorn на 127.0.0.1, порт — port в settings.yaml, наружу порт не открывается).
 3. webhook_mode: tunnel — запускает Cloudflare quick tunnel: он даёт адрес
    https://…trycloudflare.com без домена, сертификата и открытых портов
    (соединение исходящее, как long-polling у Telegram-бота). Адрес
@@ -36,7 +36,13 @@ ensure_utf8_stdio()
 from bridge.config import Settings  # noqa: E402
 from bridge.connect_client import ConnectClient, ConnectError  # noqa: E402
 
-PORT = 8000
+
+
+def port() -> int:
+    try:
+        return Settings.load().port
+    except FileNotFoundError:
+        return 8010
 TUNNEL_URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 LOG_DIR = ROOT / "logs"
 # Без окон консоли: клик по окну консоли Windows ставит процесс на паузу.
@@ -65,13 +71,13 @@ def start_bridge() -> subprocess.Popen:
     LOG_DIR.mkdir(exist_ok=True)
     out = open(LOG_DIR / "bridge.log", "a", encoding="utf-8")
     proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "bridge.app:app", "--host", "127.0.0.1", "--port", str(PORT)],
+        [sys.executable, "-m", "uvicorn", "bridge.app:app", "--host", "127.0.0.1", "--port", str(port())],
         cwd=ROOT, stdout=out, stderr=subprocess.STDOUT, env={**os.environ, "PYTHONUTF8": "1"},
         creationflags=NO_WINDOW,
     )
     for _ in range(60):
         try:
-            if requests.get(f"http://127.0.0.1:{PORT}/health", timeout=2).ok:
+            if requests.get(f"http://127.0.0.1:{port()}/health", timeout=2).ok:
                 say("мост запущен")
                 return proc
         except requests.RequestException:
@@ -92,7 +98,7 @@ def find_cloudflared() -> str:
 
 def start_tunnel() -> tuple[subprocess.Popen, str]:
     proc = subprocess.Popen(
-        [find_cloudflared(), "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{PORT}"],
+        [find_cloudflared(), "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{port()}"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
         creationflags=NO_WINDOW,
     )

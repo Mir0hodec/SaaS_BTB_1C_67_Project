@@ -44,6 +44,7 @@ session:
 onec_code:
   config_path: "onec_rag/config.json"
 
+port: 8010                      # локальный порт моста, наружу не открывается
 users_path: "config/users.yaml"
 bases_path: "config/bases.yaml"
 

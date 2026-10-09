@@ -1,6 +1,6 @@
 """Мост 1С-Коннект ↔ ИИ-помощник + API-мост для внутренних сервисов.
 
-Запуск:  python scripts/start.py  (или uvicorn bridge.app:app --host 127.0.0.1 --port 8000)
+Запуск:  python scripts/start.py  (или uvicorn bridge.app:app --host 127.0.0.1 --port 8010)
 
 channel: colleague (по умолчанию) — личные сообщения учётной записи бота,
   транспорт в bridge/connect_adapter.py (приём через «API приложений»,

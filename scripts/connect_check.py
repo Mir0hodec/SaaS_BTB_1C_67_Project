@@ -74,7 +74,7 @@ def inbound(s: Settings, sender: str, text: str) -> int:
     body = {"platform": "1c-connect", "event": "message_received", "message_id": str(uuid.uuid4()),
             "sender_id": sender, "recipient_id": s.connect.bot_specialist_id, "text": text,
             "timestamp": datetime.now().astimezone().isoformat(timespec="seconds")}
-    url = "http://127.0.0.1:8000/connect/colleague/message"
+    url = f"http://127.0.0.1:{s.port}/connect/colleague/message"
     r = requests.post(url, json=body, headers={"Authorization": f"Bearer {s.connect.webhook_token}"}, timeout=30)
     show("POST", url, body, r)
     print("Ответ бота придёт сотруднику в личный чат 1С-Коннект (см. logs/bridge.log).")

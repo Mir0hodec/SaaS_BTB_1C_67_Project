@@ -127,6 +127,7 @@ class Settings:
     data_dir: Path
     idle_timeout_minutes: int = 60
     python: str = sys.executable
+    port: int = 8010                 # локальный порт моста (8000 на сервере занят старым ботом)
     onec_code: OnecCodeSettings = field(
         default_factory=lambda: OnecCodeSettings(REPO_ROOT / "onec_rag" / "config.json"))
 
@@ -165,6 +166,7 @@ class Settings:
             data_dir=repo_path(session.get("data_dir", ".data")),
             idle_timeout_minutes=session.get("idle_timeout_minutes", 60),
             python=raw.get("python") or sys.executable,
+            port=int(raw.get("port") or 8010),
             onec_code=OnecCodeSettings(repo_path(code.get("config_path", "onec_rag/config.json")),
                                        code.get("python", "")),
         )
