@@ -32,3 +32,4 @@ config/bases.yaml
 bilgir_backup_*.zip
 .claude/
 config/*.bak
+.venv/
