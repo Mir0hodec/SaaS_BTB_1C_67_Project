@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="panel-token" content="{{TOKEN}}">
+<title>ИИ-помощник · панель</title>
+<link rel="icon" href="/panel/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/panel/static/panel.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><path d="M16 3l3.2 7.3L27 12l-6 5.3L22.6 25 16 21l-6.6 4L11 17.3 5 12l7.8-1.7z"/></svg>
+      </div>
+      <div>
+        <div class="brand-title">ИИ-помощник</div>
+        <div class="brand-sub">ГК «Эксперт»</div>
+      </div>
+    </div>
+    <nav class="nav" id="nav">
+      <a href="#overview" data-page="overview"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Обзор</a>
+      <a href="#people" data-page="people"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><circle cx="17" cy="9" r="2.6"/><path d="M16 14.6c2.6-.2 4.8 1.3 5.5 4.4"/></svg>Сотрудники</a>
+      <a href="#journal" data-page="journal"><svg viewBox="0 0 24 24"><path d="M5 4h11l3 3v13H5z"/><path d="M9 10h7M9 14h7M9 18h4"/></svg>Журнал</a>
+      <a href="#checks" data-page="checks"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>Проверки</a>
+      <a href="#settings" data-page="settings"><svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>Настройки</a>
+      <a href="#logs" data-page="logs"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg>Логи</a>
+    </nav>
+    <div class="side-foot">
+      <button class="ghost theme" id="theme" title="Тема оформления"><svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 019.5 4 8 8 0 1020 14.5z"/></svg><span>Тема</span></button>
+      <div class="version" id="version"></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <div>
+        <h1 id="title">Обзор</h1>
+        <div class="subtitle" id="subtitle"></div>
+      </div>
+      <div class="top-actions">
+        <span class="pill" id="state-pill"><i></i><span>…</span></span>
+        <button class="btn" id="pause-btn">…</button>
+      </div>
+    </header>
+    <div id="page" class="page"></div>
+  </main>
+</div>
+
+<div class="drawer" id="drawer" hidden>
+  <div class="drawer-back" data-close></div>
+  <section class="drawer-panel" role="dialog" aria-modal="true">
+    <button class="icon-btn drawer-x" data-close title="Закрыть"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    <div id="drawer-body"></div>
+  </section>
+</div>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-back"></div>
+  <section class="modal-card" role="alertdialog" aria-modal="true">
+    <h3 id="modal-title"></h3>
+    <p id="modal-text"></p>
+    <div class="modal-actions">
+      <button class="btn ghost" id="modal-cancel">Отмена</button>
+      <button class="btn primary" id="modal-ok">Да</button>
+    </div>
+  </section>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<script src="/panel/static/panel.js"></script>
+</body>
+</html>

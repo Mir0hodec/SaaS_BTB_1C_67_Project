@@ -6,7 +6,7 @@ import zipfile
 import pytest
 
 from bridge.connect_history import (
-    HistoryError, LimitReached, build_request, parse_chat_html, parse_response, poll,
+    HistoryError, HistoryStatus, LimitReached, build_request, parse_chat_html, parse_response, poll,
 )
 
 BOT = "f9d6119c-ec7a-4dfe-88db-ddb0f444e867"
@@ -102,10 +102,39 @@ def test_poll_seeds_existing_then_emits_only_new():
     assert set(calls) == {IGOR}
 
 
-def test_poll_without_colleagues_does_not_call_api():
-    calls = []
-    poll(BOT, [], lambda m: None, threading.Event(), fetch=lambda *a: calls.append(a), interval=0)
-    assert calls == []
+def test_poll_without_colleagues_waits_and_picks_up_new_ones():
+    calls, stop, asked = [], threading.Event(), []
+
+    def colleagues():
+        asked.append(1)
+        return [] if len(asked) < 2 else [IGOR]   # список пополнили из панели
+
+    def fetch(bot, colleague, hours):
+        calls.append(colleague)
+        stop.set()
+        return soap_response(code="SUCCESS", data="")
+
+    status = HistoryStatus()
+    poll(BOT, colleagues, lambda m: None, stop, fetch=fetch, interval=lambda: 0, status=status)
+    assert calls == [IGOR] and len(asked) >= 2
+    snap = status.snapshot()
+    assert snap["calls_last_hour"] == 1 and snap["targets"][0]["state"] == "ok" and not snap["running"]
+
+
+def test_status_tracks_errors_and_limits():
+    responses = [soap_response(code="ACCESS_DENIED", data="Отсутствует доступ"),
+                 soap_response(code="OUT_OF_LIMIT", data="limit reached")]
+    stop, status = threading.Event(), HistoryStatus()
+
+    def fetch(bot, colleague, hours):
+        if len(responses) == 1:
+            stop.set()
+        return responses.pop(0)
+
+    poll(BOT, [OLGA, IGOR], lambda m: None, stop, fetch=fetch, interval=0, status=status)
+    states = {t["colleague_id"]: t["state"] for t in status.snapshot()["targets"]}
+    assert states == {OLGA: "access_denied", IGOR: "limit"}
+    assert status.snapshot()["limit_hits_last_hour"] == 1
 
 
 def test_param_and_access_errors_are_reported():

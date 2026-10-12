@@ -30,3 +30,5 @@ config/bases.yaml
 
 # Бэкап старого бота: реальная переписка клиентов
 bilgir_backup_*.zip
+.claude/
+config/*.bak

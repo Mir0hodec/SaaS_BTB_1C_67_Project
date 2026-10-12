@@ -16,6 +16,7 @@ import logging
 import queue
 import sys
 import threading
+import time
 from concurrent.futures import Future
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -32,6 +33,8 @@ from fastapi import FastAPI, Header, HTTPException, Request  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from bridge import connect_history, connect_pipe  # noqa: E402
+from bridge.connect_directory import Directory, fetch_specialists  # noqa: E402
+from bridge.panel import panel_router  # noqa: E402
 from bridge.access import User, resolve_user  # noqa: E402
 from bridge.connect_adapter import ConnectAdapter  # noqa: E402
 from bridge.connect_pipe import ColleagueMessage  # noqa: E402
@@ -59,6 +62,7 @@ class Worker:
         self.assistant = assistant
         self.queue: queue.Queue[Task | None] = queue.Queue()
         self.thread = threading.Thread(target=self._loop, name="assistant-worker", daemon=True)
+        self.current: dict | None = None   # на чей вопрос сейчас отвечает — для панели
 
     def start(self) -> None:
         self.thread.start()
@@ -76,6 +80,8 @@ class Worker:
             try:
                 job = task.prepare() if task.prepare else task.job
                 if job is not None:
+                    self.current = {"user_key": job.user.key, "user_name": job.user.name,
+                                    "text": job.text[:300], "started": time.time()}
                     task.deliver(self.assistant.handle(job))
             except Exception:  # noqa: BLE001 — один сбой не должен остановить очередь
                 log.exception("ошибка обработки вопроса")
@@ -84,6 +90,7 @@ class Worker:
                 except Exception:  # noqa: BLE001
                     log.exception("не удалось сообщить об ошибке")
             finally:
+                self.current = None
                 self.queue.task_done()
 
 
@@ -104,6 +111,9 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
     connect = connect or ConnectClient(cs.api_base_url, cs.login, cs.password, timeout=cs.request_timeout_seconds)
     worker = Worker(assistant)
     stop_listening = threading.Event()
+    history_status = connect_history.HistoryStatus()
+    directory = Directory(store, (lambda: fetch_specialists(cs.login, cs.password))
+                          if cs.login and cs.password else None)
 
     def start_colleague_listener() -> None:
         source = colleague_source
@@ -113,8 +123,8 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
                 return
             client = connect_history.HistoryClient(cs.login, cs.password, timeout=cs.request_timeout_seconds)
             source = lambda on_msg, stop: connect_history.poll(  # noqa: E731
-                cs.bot_specialist_id, cs.history_colleagues, on_msg, stop, fetch=client.fetch,
-                interval=cs.history_interval_seconds, hours=cs.history_hours)
+                cs.bot_specialist_id, lambda: cs.history_colleagues, on_msg, stop, fetch=client.fetch,
+                interval=lambda: cs.history_interval_seconds, hours=cs.history_hours, status=history_status)
         elif source is None:
             if not cs.agent_login:
                 log.error("режим личных сообщений: не задан %s — приём сообщений не запущен", cs.agent_login_env)
@@ -129,6 +139,7 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
         worker.start()
         if cs.channel == "colleague":
             start_colleague_listener()
+        threading.Thread(target=directory.ensure_fresh, daemon=True).start()
         yield
         stop_listening.set()
         worker.stop()
@@ -136,6 +147,7 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
     app = FastAPI(title="ИИ-помощник ГК «Эксперт»", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.state.worker = worker
     app.state.store = store
+    app.state.started_at = time.time()
 
     @app.get("/health")
     def health() -> dict:
@@ -166,6 +178,8 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
                              submit=lambda job, deliver: worker.submit(Task(job=job, deliver=deliver)))
     app.include_router(adapter.router())
     app.state.adapter = adapter
+    app.include_router(panel_router(settings=settings, store=store, assistant=assistant, worker=worker,
+                                    directory=directory, history=history_status, started_at=time.time()))
 
     # --- линия поддержки (channel: line) ---
 

@@ -37,12 +37,13 @@ from bridge.config import Settings  # noqa: E402
 from bridge.connect_client import ConnectClient, ConnectError  # noqa: E402
 
 
-
 def port() -> int:
     try:
         return Settings.load().port
     except FileNotFoundError:
         return 8010
+
+
 TUNNEL_URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 LOG_DIR = ROOT / "logs"
 # Без окон консоли: клик по окну консоли Windows ставит процесс на паузу.
@@ -72,7 +73,8 @@ def start_bridge() -> subprocess.Popen:
     out = open(LOG_DIR / "bridge.log", "a", encoding="utf-8")
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "bridge.app:app", "--host", "127.0.0.1", "--port", str(port())],
-        cwd=ROOT, stdout=out, stderr=subprocess.STDOUT, env={**os.environ, "PYTHONUTF8": "1"},
+        cwd=ROOT, stdout=out, stderr=subprocess.STDOUT,
+        env={**os.environ, "PYTHONUTF8": "1", "BRIDGE_SUPERVISED": "1"},   # панель может перезапустить
         creationflags=NO_WINDOW,
     )
     for _ in range(60):
@@ -138,7 +140,17 @@ def set_hook(settings: Settings, base_url: str) -> None:
             time.sleep(10)
 
 
+def already_running() -> bool:
+    try:
+        return requests.get(f"http://127.0.0.1:{port()}/health", timeout=2).ok
+    except requests.RequestException:
+        return False
+
+
 def main() -> int:
+    if already_running():
+        say(f"бот уже запущен — панель управления: http://127.0.0.1:{port()}/panel")
+        return 0
     settings = Settings.load()
     colleague = settings.connect.channel == "colleague"
     # Токен нужен и в режиме личных сообщений: им закрыт HTTP-приёмник

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -26,7 +27,7 @@ from bridge.config import Settings
 from bridge.mcp_config_builder import allowed_tools, build_mcp_config
 from bridge.store import Store, now
 from common.doc_extract import SUPPORTED_EXTENSIONS, extract_text
-from common.doc_index import DocIndex
+from common.doc_index import BuildReport, DocIndex, IndexNotBuiltError
 
 log = logging.getLogger("bridge")
 INLINE_ATTACHMENT_CHARS = 20_000
@@ -67,6 +68,8 @@ class Assistant:
         self.store = store
         self.runner = runner or ClaudeRunner(settings)
         self._kb_checked_at: float | None = None
+        self._kb_lock = threading.Lock()
+        self.kb_last: dict = {}      # итог последней переиндексации — для панели
 
     def refresh_knowledge_base(self, force: bool = False) -> None:
         """Папку «База знаний» пополняют — индекс догоняет её сам."""
@@ -75,17 +78,56 @@ class Assistant:
                 and now_ts - self._kb_checked_at < self.KB_CHECK_INTERVAL_SECONDS:
             return
         self._kb_checked_at = now_ts
-        kb = self.settings.knowledge_base
         try:
-            idx = DocIndex(kb.index_path)
-            try:
-                report = idx.rebuild_if_changed(kb.root, kb.exclude)
-            finally:
-                idx.close()
-            if report:
-                log.info("база знаний переиндексирована: %d документов", len(report.indexed))
+            self._rebuild_knowledge_base(full=False)
         except Exception:  # noqa: BLE001 — старый индекс лучше, чем отказ отвечать
             log.exception("не удалось обновить индекс базы знаний")
+
+    def rebuild_knowledge_base(self) -> dict:
+        """Полная переиндексация по кнопке в панели. Возвращает итог."""
+        self._kb_checked_at = time.monotonic()
+        self._rebuild_knowledge_base(full=True)
+        return self.kb_last
+
+    def _rebuild_knowledge_base(self, *, full: bool) -> BuildReport | None:
+        kb = self.settings.knowledge_base
+        with self._kb_lock:
+            if full and not kb.root.is_dir():
+                raise FileNotFoundError(f"нет папки базы знаний: {kb.root}")
+            idx = DocIndex(kb.index_path)
+            try:
+                report = idx.rebuild_from_dir(kb.root, kb.exclude) if full \
+                    else idx.rebuild_if_changed(kb.root, kb.exclude)
+            finally:
+                idx.close()
+        if report:
+            log.info("база знаний переиндексирована: %d документов", len(report.indexed))
+            self.kb_last = {
+                "at": now().isoformat(), "indexed": len(report.indexed), "chunks": report.chunks,
+                "duplicates": len(report.duplicates), "excluded": len(report.excluded),
+                "empty": [Path(p).name for p in report.empty][:20],
+                "failed": [f"{Path(p).name}: {e}" for p, e in report.failed][:20],
+                "unsupported": [Path(p).name for p in report.unsupported][:20],
+            }
+        return report
+
+    def knowledge_base_info(self) -> dict:
+        kb = self.settings.knowledge_base
+        info = {"root": str(kb.root), "root_exists": kb.root.is_dir(), "documents": 0, "built_at": None,
+                "products": {}, "last": self.kb_last}
+        try:
+            idx = DocIndex(kb.index_path, readonly=True)
+        except IndexNotBuiltError:
+            return info
+        try:
+            docs = idx.list_documents()
+            info["documents"] = len(docs)
+            info["built_at"] = idx.built_at()
+            for d in docs:
+                info["products"][d["product"]] = info["products"].get(d["product"], 0) + 1
+        finally:
+            idx.close()
+        return info
 
     def users(self) -> dict[str, User]:
         return load_users(self.settings.users_path)
@@ -219,12 +261,14 @@ class Assistant:
         if not text and not files:
             text = "Ответ получился пустым. Попробуйте переформулировать вопрос."
         self._log(job, base_id, "ok", started, cost=cost, answer_chars=len(text), files=len(files),
-                  question=question)
+                  question=question, answer=text)
         return Reply(text, "ok", files)
 
     def _log(self, job: Job, base_id: str | None, status: str, started: float, *, cost: float | None = None,
-             error: str | None = None, answer_chars: int = 0, files: int = 0, question: str | None = None) -> None:
+             error: str | None = None, answer_chars: int = 0, files: int = 0, question: str | None = None,
+             answer: str | None = None) -> None:
         self.store.log(channel=job.channel, user_key=job.user.key, user_name=job.user.name, base_id=base_id,
                        question=question if question is not None else job.text, status=status,
                        answer_chars=answer_chars, files=files,
-                       duration_ms=int((time.monotonic() - started) * 1000), cost_usd=cost, error=error)
+                       duration_ms=int((time.monotonic() - started) * 1000), cost_usd=cost, error=error,
+                       answer=answer)

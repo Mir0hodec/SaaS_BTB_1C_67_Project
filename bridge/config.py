@@ -130,6 +130,7 @@ class Settings:
     port: int = 8010                 # локальный порт моста (8000 на сервере занят старым ботом)
     onec_code: OnecCodeSettings = field(
         default_factory=lambda: OnecCodeSettings(REPO_ROOT / "onec_rag" / "config.json"))
+    source: Path = REPO_ROOT / "config" / "settings.yaml"   # откуда прочитаны — сюда пишет панель
 
     @property
     def counterparty_check_enabled(self) -> bool:
@@ -169,4 +170,5 @@ class Settings:
             port=int(raw.get("port") or 8010),
             onec_code=OnecCodeSettings(repo_path(code.get("config_path", "onec_rag/config.json")),
                                        code.get("python", "")),
+            source=Path(path),
         )

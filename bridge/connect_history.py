@@ -27,8 +27,12 @@ import hashlib
 import io
 import logging
 import re
+import threading
+import time
 import zipfile
 import xml.etree.ElementTree as ET
+from collections import deque
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from html import unescape
 from threading import Event as StopFlag
@@ -177,42 +181,143 @@ class HistoryClient:
         return r.content
 
 
-def poll(bot_id: str, colleagues: Iterable[str], on_message: Callable[[ColleagueMessage], None],
-         stop: StopFlag, *, fetch: Callable[[str, str, float], bytes], interval: float = 75.0,
-         hours: float = 6.0) -> None:
+@dataclass
+class TargetStatus:
+    """Как читается переписка с одним сотрудником — для панели управления."""
+    colleague_id: str
+    state: str = "waiting"       # waiting | ok | limit | access_denied | error
+    error: str = ""
+    last_poll_at: float | None = None
+    last_ok_at: float | None = None
+    messages: int = 0            # сообщений в окне истории при последнем чтении
+    last_message_at: str = ""    # время последнего сообщения сотрудника (из истории)
+
+
+class HistoryStatus:
+    """Состояние опроса истории: по сотрудникам и запросы к API за последний час."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.targets: dict[str, TargetStatus] = {}
+        self.calls: deque[float] = deque()
+        self.limit_hits: deque[float] = deque()
+        self.running = False
+        self.interval = 0.0
+        self.next_poll_at: float | None = None
+
+    def _trim(self, now: float) -> None:
+        for q in (self.calls, self.limit_hits):
+            while q and now - q[0] > 3600:
+                q.popleft()
+
+    def record(self, target: str, state: str, *, error: str = "", messages: list[ColleagueMessage] | None = None,
+               counted: bool = True) -> None:
+        now = time.time()
+        with self._lock:
+            t = self.targets.setdefault(target, TargetStatus(target))
+            t.state, t.error, t.last_poll_at = state, error, now
+            if counted:
+                self.calls.append(now)
+            if state == "limit":
+                self.limit_hits.append(now)
+            if messages is not None:
+                t.last_ok_at, t.messages = now, len(messages)
+                own = [m.sent_at for m in messages if m.author_id == m.colleague_id]
+                t.last_message_at = max(own) if own else t.last_message_at
+            self._trim(now)
+
+    def sync_targets(self, targets: list[str]) -> None:
+        with self._lock:
+            for t in targets:
+                self.targets.setdefault(t, TargetStatus(t))
+            for gone in set(self.targets) - set(targets):
+                del self.targets[gone]
+
+    def snapshot(self) -> dict:
+        now = time.time()
+        with self._lock:
+            self._trim(now)
+            return {
+                "running": self.running,
+                "interval": self.interval,
+                "next_poll_in": max(0.0, self.next_poll_at - now) if self.next_poll_at else None,
+                "calls_last_hour": len(self.calls),
+                "limit_hits_last_hour": len(self.limit_hits),
+                "targets": [asdict(t) for t in self.targets.values()],
+            }
+
+
+def _classify(exc: Exception) -> str:
+    text = str(exc)
+    return "access_denied" if "ACCESS_DENIED" in text else "error"
+
+
+def poll(bot_id: str, colleagues: Iterable[str] | Callable[[], Iterable[str]],
+         on_message: Callable[[ColleagueMessage], None], stop: StopFlag, *,
+         fetch: Callable[[str, str, float], bytes], interval: float | Callable[[], float] = 75.0,
+         hours: float = 6.0, status: HistoryStatus | None = None) -> None:
     """Опрашивать историю до stop.set(): один запрос раз в interval секунд,
-    по очереди по парам «бот — сотрудник из colleagues»."""
-    targets = list(colleagues)
-    if not targets:
-        log.error("история 1С-Коннект: не задан connect.history_colleagues (UUID сотрудников) — приём не запущен")
-        return
+    по очереди по парам «бот — сотрудник из colleagues».
+
+    colleagues и interval можно передать функциями — тогда список сотрудников
+    и частота подхватываются на лету (панель управления меняет их без перезапуска).
+    Новый сотрудник при первом чтении «засевается»: то, что уже было в истории,
+    запоминается без ответа."""
+    get_targets = colleagues if callable(colleagues) else (lambda fixed=list(colleagues): fixed)
+    get_interval = interval if callable(interval) else (lambda fixed=interval: fixed)
+    status = status or HistoryStatus()
+    status.running = True
     seeded: set[str] = set()
     known: set[str] = set()
     limit_logged_at: datetime | None = None
+    empty_logged = False
     i = 0
-    while not stop.is_set():
-        target = targets[i % len(targets)]
-        i += 1
-        try:
-            messages = parse_response(fetch(bot_id, target, hours), bot_id)
-        except LimitReached as exc:
-            if limit_logged_at is None or datetime.now() - limit_logged_at > timedelta(minutes=30):
-                log.warning("история 1С-Коннект: лимит запросов исчерпан (%s) — жду", exc)
-                limit_logged_at = datetime.now()
-            stop.wait(interval)
-            continue
-        except (requests.RequestException, HistoryError, ET.ParseError, zipfile.BadZipFile) as exc:
-            log.warning("история 1С-Коннект (%s): %s", target, exc)
-            stop.wait(interval)
-            continue
-        if target not in seeded:
-            seeded.add(target)
-            known.update(m.message_id for m in messages)
-            log.info("история 1С-Коннект (%s): при запуске уже было %d сообщений — без ответа",
-                     target or "вся переписка", len(messages))
-        else:
-            for m in messages:
-                if m.message_id not in known:
-                    known.add(m.message_id)
-                    on_message(m)
-        stop.wait(interval)
+    try:
+        while not stop.is_set():
+            targets = [t.lower() for t in get_targets()]
+            wait = max(0.0, float(get_interval()))
+            status.interval = wait
+            status.sync_targets(targets)
+            seeded &= set(targets)    # убранный и снова добавленный сотрудник засевается заново
+            if not targets:
+                if not empty_logged:
+                    log.error("история 1С-Коннект: список сотрудников пуст (connect.history_colleagues) — "
+                              "жду, пока его заполнят")
+                    empty_logged = True
+                idle = min(5.0, wait) or 0.01
+                status.next_poll_at = time.time() + idle
+                stop.wait(idle)
+                continue
+            empty_logged = False
+            target = targets[i % len(targets)]
+            i += 1
+            try:
+                messages = parse_response(fetch(bot_id, target, hours), bot_id)
+            except LimitReached as exc:
+                status.record(target, "limit", error=str(exc))
+                if limit_logged_at is None or datetime.now() - limit_logged_at > timedelta(minutes=30):
+                    log.warning("история 1С-Коннект: лимит запросов исчерпан (%s) — жду", exc)
+                    limit_logged_at = datetime.now()
+            except (requests.RequestException, HistoryError, ET.ParseError, zipfile.BadZipFile) as exc:
+                status.record(target, _classify(exc), error=str(exc)[:300])
+                log.warning("история 1С-Коннект (%s): %s", target, exc)
+            else:
+                status.record(target, "ok", messages=messages)
+                if target not in seeded:
+                    seeded.add(target)
+                    known.update(m.message_id for m in messages)
+                    log.info("история 1С-Коннект (%s): при запуске уже было %d сообщений — без ответа",
+                             target, len(messages))
+                else:
+                    for m in messages:
+                        if m.message_id not in known:
+                            known.add(m.message_id)
+                            try:
+                                on_message(m)
+                            except Exception:  # noqa: BLE001 — одно сообщение не должно остановить приём
+                                log.exception("не удалось принять сообщение %s", m.message_id)
+            status.next_poll_at = time.time() + wait
+            stop.wait(wait)
+    finally:
+        status.running = False
+        status.next_poll_at = None

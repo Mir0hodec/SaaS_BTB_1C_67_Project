@@ -57,6 +57,9 @@ class Store:
         self._conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(journal)")}
+        if "answer" not in cols:   # журнал старых версий — без текста ответа
+            self._conn.execute("ALTER TABLE journal ADD COLUMN answer TEXT")
         self._lock = threading.Lock()
 
     def _exec(self, sql: str, params: tuple = ()) -> list[tuple]:
@@ -102,18 +105,59 @@ class Store:
 
     def log(self, *, channel: str, user_key: str, user_name: str | None, base_id: str | None,
             question: str, status: str, answer_chars: int = 0, files: int = 0,
-            duration_ms: int = 0, cost_usd: float | None = None, error: str | None = None) -> None:
+            duration_ms: int = 0, cost_usd: float | None = None, error: str | None = None,
+            answer: str | None = None) -> None:
         self._exec(
             "INSERT INTO journal (created_at, channel, user_key, user_name, base_id, question, status, "
-            "answer_chars, files, duration_ms, cost_usd, error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "answer_chars, files, duration_ms, cost_usd, error, answer) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (now().isoformat(), channel, user_key, user_name, base_id, question[:2000], status,
-             answer_chars, files, duration_ms, cost_usd, error),
+             answer_chars, files, duration_ms, cost_usd, error, answer[:20000] if answer else None),
         )
 
     def journal(self) -> list[dict]:
         cols = ["created_at", "channel", "user_key", "user_name", "base_id", "question", "status",
                 "answer_chars", "files", "duration_ms", "cost_usd", "error"]
         rows = self._exec(f"SELECT {', '.join(cols)} FROM journal ORDER BY id")
+        return [dict(zip(cols, r)) for r in rows]
+
+    # --- выборки для панели управления ---
+
+    _PANEL_COLS = ["id", "created_at", "channel", "user_key", "user_name", "base_id", "question", "status",
+                   "answer_chars", "files", "duration_ms", "cost_usd", "error"]
+
+    def journal_page(self, *, limit: int = 50, before_id: int | None = None, statuses: list[str] | None = None,
+                     user_key: str | None = None, query: str | None = None) -> list[dict]:
+        """Записи журнала от новых к старым, без текста ответа."""
+        where, params = [], []
+        if before_id:
+            where.append("id < ?")
+            params.append(before_id)
+        if statuses:
+            where.append(f"status IN ({','.join('?' * len(statuses))})")
+            params += statuses
+        if user_key:
+            where.append("user_key = ?")
+            params.append(user_key)
+        if query:
+            where.append("(question LIKE ? OR answer LIKE ? OR error LIKE ?)")
+            params += [f"%{query}%"] * 3
+        sql = f"SELECT {', '.join(self._PANEL_COLS)} FROM journal"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY id DESC LIMIT ?"
+        rows = self._exec(sql, (*params, max(1, min(limit, 500))))
+        return [dict(zip(self._PANEL_COLS, r)) for r in rows]
+
+    def journal_entry(self, entry_id: int) -> dict | None:
+        cols = [*self._PANEL_COLS, "answer"]
+        rows = self._exec(f"SELECT {', '.join(cols)} FROM journal WHERE id = ?", (entry_id,))
+        return dict(zip(cols, rows[0])) if rows else None
+
+    def journal_since(self, since: datetime) -> list[dict]:
+        """Записи с момента since (UTC) — для сводки и графика."""
+        cols = ["created_at", "user_key", "status", "duration_ms", "cost_usd"]
+        rows = self._exec(f"SELECT {', '.join(cols)} FROM journal WHERE created_at >= ? ORDER BY id",
+                          (since.astimezone(timezone.utc).isoformat(),))
         return [dict(zip(cols, r)) for r in rows]
 
     # --- дедупликация вебхуков ---
