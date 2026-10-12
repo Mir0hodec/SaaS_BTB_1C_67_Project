@@ -112,3 +112,10 @@ def allowed_tools(base_id: str | None, counterparty: bool = False, onec_code: bo
     if onec_code:
         tools += [f"mcp__onec_code__{t}" for t in ONEC_CODE_TOOLS]
     return tools
+
+
+def session_tools(settings: Settings, base: Base | None = None) -> list[str]:
+    """Разрешённые инструменты сессии по настройкам — одно место для бота, панели и проверок,
+    чтобы проверка Claude видела ровно то же, что видит бот."""
+    return allowed_tools(base.id if base else None, settings.counterparty_check_enabled,
+                         settings.onec_code.enabled, base=base, dev=settings.dev.enabled)

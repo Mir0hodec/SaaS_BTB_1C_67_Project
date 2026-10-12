@@ -22,7 +22,7 @@ ensure_utf8_stdio()
 from bridge.answer import clean_answer  # noqa: E402
 from bridge.claude_runner import ClaudeRunner  # noqa: E402
 from bridge.config import Settings  # noqa: E402
-from bridge.mcp_config_builder import allowed_tools, build_mcp_config  # noqa: E402
+from bridge.mcp_config_builder import build_mcp_config, session_tools  # noqa: E402
 
 
 def main() -> int:
@@ -41,7 +41,7 @@ def main() -> int:
                 + " ".join(sys.argv[1:]))
     result = ClaudeRunner(settings).run(
         question=question, session_id=str(uuid.uuid4()), is_new=True, cwd=work, mcp_config=config,
-        allowed=allowed_tools(None, settings.counterparty_check_enabled, True))
+        allowed=session_tools(settings))
     code_tools = [t for t in result.tools if t.startswith("mcp__onec_code__")]
     print("Инструменты поиска по коду в сессии:", ", ".join(code_tools) or "НЕТ")
     if result.is_error:

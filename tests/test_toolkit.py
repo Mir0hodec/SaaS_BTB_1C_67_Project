@@ -151,3 +151,13 @@ def test_panel_bases_crud(env, tmp_path):
         assert client.delete("/panel/api/bases/new_base", headers=auth).status_code == 200
         assert "new_base" not in yaml.safe_load(env.bases_path.read_text(encoding="utf-8"))
         assert toolkit_secrets.get_token("new_base") == ""
+
+
+def test_check_and_bot_allow_the_same_tools(env):
+    """Проверка Claude в панели и обычный ответ бота разрешают одинаковые инструменты."""
+    from bridge.mcp_config_builder import session_tools
+    env.dev.skills_dir = REPO / "tools" / "cc-1c-skills" / ".claude" / "skills"
+    tools = session_tools(env)
+    assert any(t.startswith("mcp__dev__") for t in tools) == env.dev.enabled
+    base = load_bases(env.bases_path)["gke_ivan"]
+    assert set(session_tools(env)) < set(session_tools(env, base))

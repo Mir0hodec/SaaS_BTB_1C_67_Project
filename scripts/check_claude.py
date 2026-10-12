@@ -24,7 +24,7 @@ ensure_utf8_stdio()
 
 from bridge.claude_runner import ClaudeRunner, _base_command  # noqa: E402
 from bridge.config import Settings  # noqa: E402
-from bridge.mcp_config_builder import allowed_tools, build_mcp_config  # noqa: E402
+from bridge.mcp_config_builder import build_mcp_config, session_tools  # noqa: E402
 
 
 def main() -> int:
@@ -41,8 +41,7 @@ def main() -> int:
                               target=work / "mcp.json")
     result = runner.run(question="Какие инструменты тебе доступны? Перечисли их имена одной строкой.",
                         session_id=str(uuid.uuid4()), is_new=True, cwd=work, mcp_config=config,
-                        allowed=allowed_tools(None, settings.counterparty_check_enabled,
-                                              settings.onec_code.enabled))
+                        allowed=session_tools(settings))
     print("Инструменты в сессии:", ", ".join(result.tools) or "—")
     if result.is_error:
         print("ОШИБКА:", result.error)

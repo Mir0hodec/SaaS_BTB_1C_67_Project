@@ -25,7 +25,7 @@ from bridge import onec_toolkit, toolkit_secrets
 from bridge.answer import clean_answer
 from bridge.claude_runner import ClaudeRunner, RunResult
 from bridge.config import REPO_ROOT, Settings
-from bridge.mcp_config_builder import allowed_tools, build_mcp_config
+from bridge.mcp_config_builder import build_mcp_config, session_tools
 from bridge.store import Store, now
 from common.doc_extract import SUPPORTED_EXTENSIONS, extract_text
 from common.doc_index import BuildReport, DocIndex, IndexNotBuiltError
@@ -238,8 +238,7 @@ class Assistant:
             question=self._compose(job.user, base, question, attachments),
             session_id=session.session_id, is_new=session.is_new, cwd=workdir,
             mcp_config=mcp_config,
-            allowed=allowed_tools(base.id if base else None, self.settings.counterparty_check_enabled,
-                                  self.settings.onec_code.enabled, base=base, dev=self.settings.dev.enabled),
+            allowed=session_tools(self.settings, base),
             extra_env=extra_env,
         )
         return self._finish(job, base, question, result, outbox, started)

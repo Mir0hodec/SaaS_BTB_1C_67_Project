@@ -437,7 +437,7 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
 
     def check_claude() -> dict:
         from bridge.claude_runner import ClaudeRunner, _base_command
-        from bridge.mcp_config_builder import allowed_tools, build_mcp_config
+        from bridge.mcp_config_builder import build_mcp_config, session_tools
         runner = ClaudeRunner(settings)
         ver = subprocess.run(_base_command(settings.claude.binary, ["--version"]), capture_output=True, text=True,
                              encoding="utf-8", errors="replace", env=runner._env(), timeout=60,
@@ -450,8 +450,7 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
                                   target=work / "mcp.json")
         result = runner.run(question="Ответь одним предложением: ты на связи?", session_id=str(uuid.uuid4()),
                             is_new=True, cwd=work, mcp_config=config,
-                            allowed=allowed_tools(None, settings.counterparty_check_enabled,
-                                                  settings.onec_code.enabled))
+                            allowed=session_tools(settings))
         return {"ok": not result.is_error, "version": version_text, "tools": result.tools,
                 "answer": result.text[:500], "error": result.error, "limit": result.limit_hit,
                 "account": claude_account(settings)}
