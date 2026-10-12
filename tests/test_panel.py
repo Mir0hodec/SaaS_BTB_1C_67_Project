@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 import shutil
 
 import pytest
@@ -128,3 +129,25 @@ def test_parse_specialists_with_empty_values():
     people = parse_specialists(xml)
     assert people[0] == Specialist(id=IVAN, name="Бубнов Иван")
     assert people[1].full_name == "Бубнова Юлия" and people[1].deleted and people[1].post == "Руководитель"
+
+
+def test_claude_account_without_tokens(tmp_path):
+    import json
+
+    from bridge.panel import claude_account
+    s = Settings.load(Path(__file__).resolve().parent.parent / "config" / "settings.example.yaml")
+    s.claude.config_dir = str(tmp_path)
+    assert claude_account(s)["logged_in"] is False
+    (tmp_path / ".claude.json").write_text(json.dumps({"oauthAccount": {
+        "emailAddress": "igor@example.kz", "displayName": "Игорь", "organizationName": "ГК"}}), encoding="utf-8")
+    (tmp_path / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "secret-a", "refreshToken": "secret-r", "subscriptionType": "pro"}}), encoding="utf-8")
+    info = claude_account(s)
+    assert info["logged_in"] and info["email"] == "igor@example.kz" and info["plan"] == "pro"
+    assert "secret" not in json.dumps(info)
+
+
+def test_overview_reports_account_and_windows_user(panel):
+    client, auth, s, _ = panel
+    o = client.get("/panel/api/overview", headers=auth).json()
+    assert set(o["account"]) >= {"logged_in", "email", "plan"} and o["windows_user"]["name"]

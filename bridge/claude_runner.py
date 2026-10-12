@@ -110,6 +110,7 @@ class ClaudeRunner:
         env["PYTHONUTF8"] = "1"
         env["MCP_TIMEOUT"] = str(self.settings.claude.mcp_timeout_ms)
         env["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false"   # коннекторы аккаунта claude.ai (Docs и т.п.) боту не нужны
+        env["DISABLE_AUTOUPDATER"] = "1"               # версию CLI обновляем сами, не посреди ответа
         if self.settings.claude.config_dir:
             env["CLAUDE_CONFIG_DIR"] = self.settings.claude.config_dir
         return env

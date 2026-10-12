@@ -107,14 +107,14 @@
     let cls = "ok", text = "Работает";
     const r = o.receiver;
     const bad = r.receive === "history" && r.targets.some((t) => t.state === "access_denied" || t.state === "error");
-    if (o.paused) { cls = "warn"; text = "На паузе"; }
+    if (o.paused) { cls = "warn"; text = "Остановлен"; }
     else if (o.limit_until) { cls = "warn"; text = "Лимит подписки до " + new Date(o.limit_until).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }); }
     else if (r.receive === "history" && !r.running) { cls = "bad"; text = "Приём не запущен"; }
     else if (bad) { cls = "warn"; text = "Работает, есть предупреждения"; }
     pill.className = "pill " + cls;
     pill.lastElementChild.textContent = text;
     const b = $("#pause-btn");
-    b.innerHTML = o.paused ? ICON.play + "Включить" : ICON.pause + "Пауза";
+    b.innerHTML = o.paused ? ICON.play + "Запустить" : ICON.pause + "Остановить";
     b.className = "btn " + (o.paused ? "primary" : "");
     const v = o.version || {};
     $("#version").innerHTML = v.commit ? `Версия ${esc(v.commit)} · ${esc(when(v.date))}<br>Работает ${esc(secs(o.uptime))}` : `Работает ${esc(secs(o.uptime))}`;
@@ -122,10 +122,10 @@
   $("#pause-btn").onclick = async () => {
     if (!last) return;
     const pausing = !last.paused;
-    if (pausing && !(await confirmBox("Поставить бота на паузу?", "Сотрудники будут получать ответ «Помощник временно выключен», пока вы его не включите.", "На паузу"))) return;
+    if (pausing && !(await confirmBox("Остановить бота?", "Бот перестанет отвечать: сотрудники получат «Помощник временно выключен». Панель продолжит работать — запустить бота можно этой же кнопкой.", "Остановить", true))) return;
     try {
       await api("pause", { method: "POST", body: { paused: pausing } });
-      toast(pausing ? "Бот на паузе" : "Бот снова отвечает");
+      toast(pausing ? "Бот остановлен" : "Бот запущен и отвечает");
       refreshHeader();
       if (current === "overview") render();
     } catch (e) { toast(e.message, true); }
@@ -205,7 +205,8 @@
     const meterCls = r.limit_hits_last_hour ? "bad" : calls > 80 ? "warn" : "";
     const nowCard = o.current
       ? `<div class="now-busy"><div class="spinner"></div><div class="grow"><div><b>${esc(o.current.user_name)}</b> <span class="muted">· ${esc(secs(o.current.seconds))}</span></div><div class="muted ellipsis">«${esc(o.current.text)}»</div></div></div>`
-      : `<div class="row">${avatarIdle()}<div><b>${o.paused ? "Бот на паузе" : "Свободен"}</b><div class="muted">${o.paused ? "Новые вопросы получат ответ «временно выключен»" : "Ждёт новых сообщений"}</div></div></div>`;
+      : `<div class="row">${avatarIdle()}<div><b>${o.paused ? "Бот остановлен" : "Свободен"}</b><div class="muted">${o.paused ? "Новые вопросы получат ответ «временно выключен»" : "Ждёт новых сообщений"}</div></div></div>`;
+    const acc = o.account || {}, wu = o.windows_user || {};
     page.innerHTML = `
       <div class="grid g4">
         ${kpi("Вопросов сегодня", nf.format(t.questions), t.questions ? `${t.ok_rate}% без ошибок · ${t.users} ${plural(t.users, "сотрудник", "сотрудника", "сотрудников")}` : "сегодня ещё не спрашивали", ICON.msg)}
@@ -218,6 +219,8 @@
         <div class="card"><h2>Сейчас</h2>${nowCard}
           ${o.queue ? `<div class="hint" style="margin-top:10px">В очереди: ${o.queue}</div>` : ""}
           <dl class="facts" style="margin-top:18px">
+            <dt>Аккаунт Claude</dt><dd>${acc.logged_in ? `${esc(acc.email || acc.name || "вход выполнен")}${acc.plan ? ` <span class="chip accent">${esc(planName(acc.plan))}</span>` : ""}` : '<span style="color:var(--bad)">вход не выполнен</span>'} <a href="#" id="acc-switch" class="hint">сменить</a></dd>
+            <dt>Запущен как</dt><dd>${wu.system ? "системная задача Windows" : `пользователь ${esc(wu.name || "?")} <span class="hint">(окно PowerShell)</span>`}</dd>
             <dt>Модель</dt><dd>${esc(o.model_name)} · ${esc(effortName(o.effort))}</dd>
             <dt>База знаний</dt><dd>${o.kb.documents ? `${nf.format(o.kb.documents)} ${plural(o.kb.documents, "документ", "документа", "документов")}` : '<span style="color:var(--warn)">не собрана</span>'}</dd>
             <dt>Контрагенты</dt><dd>${o.counterparty ? "проверка включена" : '<span class="muted">не настроена</span>'}</dd>
@@ -230,6 +233,24 @@
           ${hist ? receiverCard(r, calls, perHour, meterCls) : `<div class="muted">Режим: ${esc(r.channel)} / ${esc(r.receive)}</div>`}</div>
       </div>`;
     bindRows($("#recent"));
+    $("#acc-switch").onclick = (e) => { e.preventDefault(); accountHelp(acc); };
+  }
+  const planName = (p) => ({ pro: "Pro", max: "Max", team: "Team", enterprise: "Enterprise" }[p] || p);
+  function accountHelp(acc) {
+    drawer(`<h3>Аккаунт Claude</h3>
+      <div class="muted">Под этим аккаунтом бот отвечает сотрудникам и тратит его лимит подписки.</div>
+      <div class="check-res ${acc.logged_in ? "ok" : "bad"}" style="margin-top:14px">${acc.logged_in
+        ? `<b>${esc(acc.email || acc.name || "Вход выполнен")}</b>${acc.name && acc.email ? `<div>${esc(acc.name)}</div>` : ""}${acc.plan ? `<div>Тариф: ${esc(planName(acc.plan))}</div>` : ""}`
+        : "<b>Вход в Claude не выполнен</b> — бот не сможет отвечать."}</div>
+      <div class="section-label">Как сменить аккаунт</div>
+      <ol style="padding-left:20px;line-height:1.7">
+        <li>На рабочем столе сервера откройте ярлык <b>«Сменить аккаунт Claude»</b> (есть у любого администратора) и подтвердите запуск.</li>
+        <li>В окне Claude введите <b>/login</b> и нажмите Enter, выберите вход по подписке (Claude account with subscription).</li>
+        <li>Откройте ссылку из окна в <b>Edge</b>, войдите в нужный аккаунт Claude и нажмите <b>Authorize</b>.</li>
+        <li>Скопируйте код со страницы, вставьте в окно Claude правой кнопкой мыши и нажмите Enter.</li>
+        <li>Закройте окно. Бот сразу работает под новым аккаунтом — проверьте на вкладке <a href="#checks" data-close>«Проверки»</a>.</li>
+      </ol>
+      <div class="hint">Вход хранится в папке бота (${esc(acc.config_dir || "")}), а не в профиле пользователя Windows: от того, кто вошёл на сервер, он не зависит.</div>`);
   }
   const avatarIdle = () => `<div class="avatar" style="background:var(--ok-soft);color:var(--ok)"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.2 4L19 7"/></svg></div>`;
   const kpi = (label, value, sub, icon) => `<div class="card kpi"><div class="glyph">${icon}</div><div class="label">${esc(label)}</div><div class="value num">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`;
@@ -362,7 +383,7 @@
   function checkResult(k, r, at) {
     if (!r) return "";
     const stamp = `<span class="hint" style="float:right">${esc(ago(at))}</span>`;
-    if (k === "claude") return `<div class="check-res ${r.ok ? "ok" : "bad"}">${stamp}<b>${r.ok ? "Claude на связи" : r.limit ? "Лимит подписки исчерпан" : "Ошибка"}</b><div class="hint">${esc(r.version)}</div>
+    if (k === "claude") return `<div class="check-res ${r.ok ? "ok" : "bad"}">${stamp}<b>${r.ok ? "Claude на связи" : r.limit ? "Лимит подписки исчерпан" : "Ошибка"}</b><div class="hint">${esc(r.version)}${r.account && r.account.email ? " · " + esc(r.account.email) : ""}</div>
       ${r.answer ? `<div style="margin-top:6px">«${esc(r.answer)}»</div>` : ""}${r.error ? `<pre>${esc(r.error)}</pre>` : ""}
       ${r.tools ? `<div class="hint" style="margin-top:6px">Инструментов в сессии: ${r.tools.length}</div>` : ""}</div>`;
     if (k === "connect") return `<div class="check-res ${r.ok ? "ok" : "bad"}">${stamp}<b>${r.ok ? "API отвечает" : "API не отвечает"}</b>${r.http ? ` · HTTP ${r.http}` : ""}
@@ -406,7 +427,7 @@
           <div class="savebar"><span class="hint" id="dirty"></span><button class="btn primary" id="save">Сохранить</button></div>
         </div>
         <div class="card"><h2>Обслуживание</h2>
-          <dl class="facts"><dt>Версия</dt><dd>${v.commit ? `${esc(v.commit)} · ${esc(v.subject)} <span class="muted">(${esc(when(v.date))})</span>` : "неизвестна"}</dd></dl>
+          <dl class="facts"><dt>Запущен как</dt><dd>${s.windows_user && s.windows_user.system ? "системная задача Windows — работает без входа на сервер" : `пользователь ${esc((s.windows_user || {}).name || "?")} в окне PowerShell — закроют окно, бот остановится`}</dd><dt>Версия</dt><dd>${v.commit ? `${esc(v.commit)} · ${esc(v.subject)} <span class="muted">(${esc(when(v.date))})</span>` : "неизвестна"}</dd></dl>
           <div class="row" style="margin-top:16px;flex-wrap:wrap">
             <button class="btn" id="update">${ICON.refresh}Обновить с GitHub</button>
             <button class="btn" id="restart" ${s.supervised ? "" : "disabled"}>Перезапустить бота</button>

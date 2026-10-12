@@ -11,7 +11,9 @@
 """
 from __future__ import annotations
 
+import getpass
 import hmac
+import json
 import logging
 import os
 import re
@@ -53,7 +55,9 @@ LOG_FILES = {"bridge": "bridge.log", "start": "start.log"}
 
 
 def _git(*args: str, timeout: int = 60) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(REPO_ROOT), *args], capture_output=True, text=True,
+    # safe.directory: под системной задачей git иначе отказывается работать с чужой папкой.
+    return subprocess.run(["git", "-c", "safe.directory=*", "-C", str(REPO_ROOT), *args],
+                          capture_output=True, text=True,
                           encoding="utf-8", errors="replace", timeout=timeout,
                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
@@ -65,6 +69,35 @@ def _version() -> dict:
         return {"commit": commit, "date": date, "subject": subject}
     except Exception:  # noqa: BLE001 — нет git или не репозиторий
         return {"commit": "", "date": "", "subject": ""}
+
+
+def claude_account(settings: Settings) -> dict:
+    """Под каким аккаунтом Claude работает бот — без токенов, только почта, имя и тариф."""
+    if settings.claude.config_dir:
+        cfg = Path(settings.claude.config_dir)
+        state_file = cfg / ".claude.json"
+    else:
+        cfg = Path.home() / ".claude"
+        state_file = Path.home() / ".claude.json"
+    info = {"config_dir": str(cfg), "logged_in": False, "email": None, "name": None, "org": None, "plan": None}
+    try:
+        acc = json.loads(state_file.read_text(encoding="utf-8")).get("oauthAccount") or {}
+        info.update(email=acc.get("emailAddress"), name=acc.get("displayName"), org=acc.get("organizationName"))
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        cred = json.loads((cfg / ".credentials.json").read_text(encoding="utf-8")).get("claudeAiOauth") or {}
+        info["logged_in"] = bool(cred.get("refreshToken") or cred.get("accessToken"))
+        info["plan"] = cred.get("subscriptionType")
+    except (OSError, ValueError, AttributeError):
+        pass
+    return info
+
+
+def windows_user() -> dict:
+    name = getpass.getuser()
+    system = name.upper() in ("SYSTEM", "СИСТЕМА") or name.endswith("$")
+    return {"name": name, "system": system}
 
 
 def _tail(path: Path, lines: int) -> list[str]:
@@ -219,6 +252,8 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
             "version": version,
             "supervised": os.environ.get("BRIDGE_SUPERVISED") == "1",
             "checks": checks,
+            "account": claude_account(settings),
+            "windows_user": windows_user(),
         }
 
     @r.post("/panel/api/pause")
@@ -350,7 +385,7 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
         return {"model": c.model, "effort": c.effort, "interval": cs.history_interval_seconds,
                 "ack_text": cs.ack_text, "models": [{"id": k, "name": v} for k, v in MODELS.items()],
                 "efforts": EFFORTS, "colleagues": len(cs.history_colleagues), "version": version,
-                "supervised": os.environ.get("BRIDGE_SUPERVISED") == "1"}
+                "supervised": os.environ.get("BRIDGE_SUPERVISED") == "1", "windows_user": windows_user()}
 
     @r.get("/panel/api/settings")
     def get_settings(request: Request) -> dict:
@@ -414,7 +449,8 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
                             allowed=allowed_tools(None, settings.counterparty_check_enabled,
                                                   settings.onec_code.enabled))
         return {"ok": not result.is_error, "version": version_text, "tools": result.tools,
-                "answer": result.text[:500], "error": result.error, "limit": result.limit_hit}
+                "answer": result.text[:500], "error": result.error, "limit": result.limit_hit,
+                "account": claude_account(settings)}
 
     def check_connect() -> dict:
         cs = settings.connect
