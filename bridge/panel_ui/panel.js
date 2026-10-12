@@ -571,7 +571,14 @@
       if (!r.changed) { box.innerHTML = `<div class="check-res ok">Уже последняя версия.</div>`; return; }
       box.innerHTML = `<div class="check-res ok"><b>Загружено изменений: ${r.commits.length}</b><pre>${esc(r.commits.join("\n"))}</pre>${r.restarting ? "<div>Бот перезапускается…</div>" : "<div>Перезапустите бота, чтобы изменения заработали.</div>"}</div>`;
       if (r.restarting) waitBack();
-    } catch (e) { box.innerHTML = `<div class="check-res bad"><b>Не обновилось.</b><pre>${esc(e.message)}</pre></div>`; }
+    } catch (e) {
+      if (e instanceof TypeError) {   // связь пропала — бот уже перезапускается с новой версией
+        box.innerHTML = `<div class="check-res ok"><b>Обновление загружено.</b><div>Бот перезапускается…</div></div>`;
+        waitBack();
+        return;
+      }
+      box.innerHTML = `<div class="check-res bad"><b>Не обновилось.</b><pre>${esc(e.message)}</pre></div>`;
+    }
   }
   async function restart() {
     const busy = last && last.current;
