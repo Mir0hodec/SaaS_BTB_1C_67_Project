@@ -45,10 +45,12 @@ $port = Get-BotPort $root
 Write-Host "== Останавливаю бота, запущенного вручную"
 Stop-BotProcesses $root
 
-Write-Host "== Вход в Claude: доступ только системе и администраторам"
-$cfg = Join-Path $root ".claude-bot"
-New-Item -ItemType Directory -Force $cfg | Out-Null
-icacls $cfg /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+Write-Host "== Вход в Claude и токены баз 1С: доступ только системе и администраторам"
+foreach ($name in ".claude-bot", ".secrets") {
+    $dir = Join-Path $root $name
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    icacls $dir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+}
 
 Write-Host "== Системная задача «$TaskName»"
 $action = New-ScheduledTaskAction -Execute $py -Argument "-X utf8 scripts\start.py" -WorkingDirectory $root

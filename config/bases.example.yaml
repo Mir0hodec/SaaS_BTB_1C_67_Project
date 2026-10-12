@@ -17,3 +17,12 @@ demo_base:
 #   auth_user: "ai_readonly"                   # отдельная учётка только на чтение
 #   auth_password: "${ACME_UT_PASSWORD}"       # из переменной окружения
 #   code_dump_dir: "D:/1c-dumps/acme_ut"
+
+# Копия клиентской базы на ПК сотрудника через MCP Toolkit (так добавляет панель, раздел «Базы 1С»).
+# Токен MCP Toolkit сюда НЕ пишется — он хранится в .secrets/toolkit.json (вводится в панели).
+# gke_ivan:
+#   title: "ГКЭ у Ивана Бубнова"
+#   tags: ["гке"]
+#   toolkit_url: "http://192.168.0.51:6003/mcp"
+#   owners: ["6a24f7b0-b9bb-42fa-91f2-250a02329a8a"]   # кто может выбирать базу; пусто — все
+#   write: true                                         # боту можно исправлять данные (execute_code)

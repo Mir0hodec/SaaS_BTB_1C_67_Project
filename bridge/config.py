@@ -117,6 +117,26 @@ class OnecCodeSettings:
 
 
 @dataclass
+class DevSettings:
+    """Сборка обработок и отчётов на сервере (mcp_dev): скиллы cc-1c-skills и платформа 1С."""
+    skills_dir: Path = REPO_ROOT / "tools" / "cc-1c-skills" / ".claude" / "skills"
+    guides_dir: Path = REPO_ROOT / "tools" / "1c-mcp-toolkit" / "skills"
+    v8_path: str = ""                # пусто — последняя установленная 8.3 в Program Files/1cv8
+
+    @property
+    def enabled(self) -> bool:
+        return (self.skills_dir / "epf-build").is_dir()
+
+    def platform(self) -> str:
+        if self.v8_path:
+            return self.v8_path
+        root = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "1cv8"
+        found = sorted(root.glob("8.3.*/bin/1cv8.exe"),
+                       key=lambda p: [int(x) for x in p.parent.parent.name.split(".") if x.isdigit()])
+        return str(found[-1].parent) if found else ""
+
+
+@dataclass
 class Settings:
     claude: ClaudeSettings
     connect: ConnectSettings
@@ -131,6 +151,7 @@ class Settings:
     onec_code: OnecCodeSettings = field(
         default_factory=lambda: OnecCodeSettings(REPO_ROOT / "onec_rag" / "config.json"))
     source: Path = REPO_ROOT / "config" / "settings.yaml"   # откуда прочитаны — сюда пишет панель
+    dev: DevSettings = field(default_factory=DevSettings)
 
     @property
     def counterparty_check_enabled(self) -> bool:
@@ -153,6 +174,7 @@ class Settings:
         kb = raw.get("knowledge_base", {})
         session = raw.get("session", {})
         code = raw.get("onec_code", {}) or {}
+        dev = raw.get("dev", {}) or {}
         return Settings(
             claude=ClaudeSettings(**raw.get("claude", {})),
             connect=ConnectSettings(**raw.get("connect", {})),
@@ -171,4 +193,5 @@ class Settings:
             onec_code=OnecCodeSettings(repo_path(code.get("config_path", "onec_rag/config.json")),
                                        code.get("python", "")),
             source=Path(path),
+            dev=DevSettings(**{k: (repo_path(v) if k.endswith("_dir") else v) for k, v in dev.items()}),
         )

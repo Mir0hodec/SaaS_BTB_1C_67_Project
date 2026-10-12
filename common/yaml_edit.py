@@ -161,3 +161,24 @@ def set_value(path: Path, keys: Sequence[str], value: Any) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(new_text, encoding="utf-8")
     os.replace(tmp, path)
+
+
+def remove_section(path: Path, section: str) -> bool:
+    """Удалить ключ верхнего уровня вместе с его блоком. Комментарии над ним остаются."""
+    text = path.read_text(encoding="utf-8-sig")
+    lines = text.splitlines(keepends=True)
+    start = _find_section(lines, section)
+    if start is None:
+        return False
+    end = _section_end(lines, start)
+    while end > start + 1 and not _is_content(lines[end - 1]):
+        end -= 1
+    new_text = "".join(lines[:start] + lines[end:])
+    data = yaml.safe_load(new_text) or {}
+    if section in data:
+        raise YamlEditError(f"{path.name}: «{section}» не удалось удалить — файл не изменён")
+    shutil.copy2(path, path.with_name(path.name + ".bak"))
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(new_text, encoding="utf-8")
+    os.replace(tmp, path)
+    return True

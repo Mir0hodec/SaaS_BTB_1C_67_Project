@@ -135,12 +135,12 @@ class ClaudeRunner:
         return args
 
     def run(self, *, question: str, session_id: str, is_new: bool, cwd: Path,
-            mcp_config: Path, allowed: list[str]) -> RunResult:
+            mcp_config: Path, allowed: list[str], extra_env: dict[str, str] | None = None) -> RunResult:
         cmd = _base_command(self.settings.claude.binary,
                             self.build_args(session_id=session_id, is_new=is_new,
                                             mcp_config=mcp_config, allowed=allowed))
         proc = subprocess.Popen(
-            cmd, cwd=str(cwd), env=self._env(),
+            cmd, cwd=str(cwd), env={**self._env(), **(extra_env or {})},   # токен базы — только этому процессу
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace",
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

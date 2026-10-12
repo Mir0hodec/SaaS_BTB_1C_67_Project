@@ -32,11 +32,13 @@ import yaml
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
+from bridge import onec_toolkit, toolkit_secrets
+from bridge.access import load_bases
 from bridge.config import REPO_ROOT, Settings
 from bridge.connect_directory import Directory, DirectoryError
 from bridge.connect_history import HistoryStatus
 from bridge.store import Store
-from common.yaml_edit import YamlEditError, set_value
+from common.yaml_edit import YamlEditError, remove_section, set_value
 
 log = logging.getLogger("bridge.panel")
 
@@ -47,6 +49,8 @@ MODELS = {
     "claude-haiku-5-5": "Haiku 5.5",
 }
 EFFORTS = ["low", "medium", "high", "max"]
+BASE_ID_RE = re.compile(r"^[a-z0-9_]{2,40}$")
+TOOLKIT_URL_RE = re.compile(r"^https?://[A-Za-z0-9.\-]+(:\d{1,5})?/mcp/?$")
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 PROXY_HEADERS = ("x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded", "cf-connecting-ip", "cf-ray")
 STATUS_GROUPS = {"ok": ["ok"], "error": ["error", "send_error"], "limit": ["limit"],
@@ -477,6 +481,33 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
                 "name": result.counterparty_name, "debt": result.debt_amount,
                 "unsigned_count": result.unsigned_eavr_count, "error": result.error}
 
+    def check_dev() -> dict:
+        """Пробная сборка пустой обработки: есть ли скиллы, платформа и лицензия 1С."""
+        dev = settings.dev
+        if not dev.enabled:
+            return {"ok": False, "error": "скиллы 1С не установлены — scripts/install_1c_skills.ps1"}
+        platform = dev.platform()
+        if not platform:
+            return {"ok": False, "error": "не найдена платформа 1С (C:/Program Files/1cv8/8.3.*/bin)"}
+
+        def script(name: str) -> str:
+            found = sorted(p for p in (dev.skills_dir / name / "scripts").glob("*.py") if not p.stem.startswith("stub"))
+            return str(found[0])
+        work = Path(tempfile.mkdtemp(prefix="epf-check-"))
+        out = work / "ПроверкаСборки.epf"
+        flags = {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace", "cwd": work,
+                 "env": {**os.environ, "PYTHONUTF8": "1"}, "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+        started = time.time()
+        init = subprocess.run([settings.python, script("epf-init"), "-Name", "ПроверкаСборки"], timeout=120, **flags)
+        if init.returncode != 0:
+            return {"ok": False, "platform": platform, "error": (init.stdout + init.stderr)[-1500:]}
+        build = subprocess.run([settings.python, script("epf-build"), "-SourceFile", str(work / "src" / "ПроверкаСборки.xml"),
+                                "-OutputFile", str(out), "-V8Path", platform], timeout=900, **flags)
+        log_text = (build.stdout + build.stderr).strip()
+        ok = build.returncode == 0 and out.is_file()
+        return {"ok": ok, "platform": platform, "seconds": round(time.time() - started),
+                "size_kb": out.stat().st_size // 1024 if out.is_file() else 0, "error": "" if ok else log_text[-2000:]}
+
     @r.post("/panel/api/check/{kind}")
     async def check(kind: str, request: Request) -> dict:
         guard(request, api=True)
@@ -492,6 +523,8 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
             fn = lambda: check_counterparty(bin_value)  # noqa: E731
         elif kind == "kb":
             fn = assistant.rebuild_knowledge_base
+        elif kind == "dev":
+            fn = check_dev
         else:
             raise HTTPException(404)
 
@@ -500,6 +533,92 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
             checks[kind] = {"at": datetime.now(timezone.utc).isoformat(), "result": result}
             return result
         return run_job(kind, recorded)
+
+    # --- базы 1С (MCP Toolkit на ПК сотрудников) ---
+
+    def bases_view() -> list[dict]:
+        try:
+            bases = load_bases(settings.bases_path)
+        except FileNotFoundError:
+            bases = {}
+        tokens = toolkit_secrets.known()
+        out = []
+        for b in bases.values():
+            check = assistant.toolkit_checks.get(b.id)
+            out.append({
+                "id": b.id, "title": b.title, "tags": [t for t in b.tags if t != b.id], "toolkit_url": b.toolkit_url,
+                "write": b.write, "token_set": b.id in tokens,
+                "owners": [{"id": o, "name": name_of(o)} for o in b.owners],
+                "check": None if check is None else {
+                    "ok": check.ok, "message": check.message, "user": check.user, "config": check.config_title
+                    or check.config, "version": check.version, "tools": len(check.tools),
+                    "at": datetime.fromtimestamp(check.checked_at, timezone.utc).isoformat()},
+            })
+        return out
+
+    @r.get("/panel/api/bases")
+    def bases(request: Request) -> dict:
+        guard(request, api=True)
+        return {"bases": bases_view(), "admin_user": onec_toolkit.ADMIN_USER}
+
+    @r.post("/panel/api/bases")
+    async def save_base(request: Request) -> dict:
+        guard(request, api=True)
+        body = await request.json()
+        base_id = str(body.get("id") or "").strip().lower()
+        if not BASE_ID_RE.match(base_id):
+            raise HTTPException(400, "код базы — латиница, цифры и _, от 2 до 40 символов (например gke_ivan)")
+        title = str(body.get("title") or "").strip()
+        url = str(body.get("toolkit_url") or "").strip()
+        if not title:
+            raise HTTPException(400, "укажите название базы")
+        if not TOOLKIT_URL_RE.match(url):
+            raise HTTPException(400, "адрес MCP Toolkit вида http://192.168.0.51:6003/mcp")
+        tags = [t.strip().lstrip("#").lower() for t in str(body.get("tags") or "").replace(";", ",").split(",")
+                if t.strip().lstrip("#")]
+        owners = [str(o).lower() for o in body.get("owners") or [] if UUID_RE.match(str(o).lower())]
+        try:
+            for key, value in (("title", title), ("tags", tags), ("toolkit_url", url), ("owners", owners),
+                               ("write", bool(body.get("write")))):
+                set_value(settings.bases_path, (base_id, key), value)
+        except YamlEditError as exc:
+            raise HTTPException(500, str(exc)) from None
+        token = str(body.get("token") or "").strip()
+        if token:
+            toolkit_secrets.set_token(base_id, token)
+        assistant.toolkit_checks.pop(base_id, None)
+        log.info("панель: база %s сохранена (%s)", base_id, url)
+        return {"bases": bases_view()}
+
+    @r.delete("/panel/api/bases/{base_id}")
+    def delete_base(base_id: str, request: Request) -> dict:
+        guard(request, api=True)
+        try:
+            if not remove_section(settings.bases_path, base_id):
+                raise HTTPException(404, "базы нет")
+        except YamlEditError as exc:
+            raise HTTPException(500, str(exc)) from None
+        toolkit_secrets.set_token(base_id, None)
+        assistant.toolkit_checks.pop(base_id, None)
+        log.info("панель: база %s удалена", base_id)
+        return {"bases": bases_view()}
+
+    @r.post("/panel/api/bases/{base_id}/check")
+    def check_base(base_id: str, request: Request) -> dict:
+        guard(request, api=True)
+        base = load_bases(settings.bases_path).get(base_id)
+        if base is None or not base.via_toolkit:
+            raise HTTPException(404, "нет такой базы с MCP Toolkit")
+        token = toolkit_secrets.get_token(base_id)
+        if not token:
+            raise HTTPException(400, "сначала задайте токен MCP Toolkit")
+
+        def do() -> dict:
+            res = onec_toolkit.probe(base.toolkit_url, token)
+            assistant.toolkit_checks[base_id] = res
+            return {"ok": res.ok, "message": res.message, "user": res.user, "config": res.config_title or res.config,
+                    "version": res.version, "tools": len(res.tools)}
+        return run_job("base", do)
 
     @r.get("/panel/api/jobs/{job_id}")
     def job(job_id: str, request: Request) -> dict:

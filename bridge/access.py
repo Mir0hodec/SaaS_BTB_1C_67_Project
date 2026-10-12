@@ -28,6 +28,16 @@ class Base:
     id: str
     title: str
     tags: tuple[str, ...]
+    toolkit_url: str = ""            # MCP Toolkit на ПК сотрудника: http://<IP>:6003/mcp
+    owners: tuple[str, ...] = ()     # кто может выбирать базу; пусто — все, кому открыта по users.yaml
+    write: bool = False              # можно ли боту писать в базу (execute_code)
+
+    @property
+    def via_toolkit(self) -> bool:
+        return bool(self.toolkit_url)
+
+    def allowed_for(self, user_key: str) -> bool:
+        return not self.owners or user_key.lower() in self.owners
 
 
 def _norm(tag: str) -> str:
@@ -71,7 +81,10 @@ def load_bases(path: Path) -> dict[str, Base]:
                 "Claude Code вычищает кириллицу из имён, инструменты пропадут"
             )
         tags = tuple(_norm(t) for t in [base_id, *b.get("tags", [])])
-        bases[base_id] = Base(id=base_id, title=b.get("title", base_id), tags=tags)
+        bases[base_id] = Base(id=base_id, title=b.get("title", base_id), tags=tags,
+                              toolkit_url=str(b.get("toolkit_url") or "").strip(),
+                              owners=tuple(str(o).lower() for o in b.get("owners") or []),
+                              write=bool(b.get("write", False)))
     return bases
 
 

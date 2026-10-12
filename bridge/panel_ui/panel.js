@@ -326,6 +326,106 @@
     catch (e) { toast(e.message, true); }
   }
 
+  // --- базы 1С ---
+  const DB_ICON = '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>';
+  async function basesPage() {
+    const d = await api("bases");
+    const list = d.bases;
+    page.innerHTML = `
+      <div class="card"><h2>Базы 1С сотрудников <button class="btn sm primary" id="base-add" style="margin-left:auto">${ICON.plus}Добавить базу</button></h2>
+        <div class="hint" style="margin-bottom:12px">Сотрудник открывает свою копию базы под «${esc(d.admin_user)}» с паролем 1 и запускает обработку MCP Toolkit (встроенный сервер, порт 6003). Боту базу выбирают хэштегом: «#хэштег почему не проводится документ…».</div>
+        <div class="list">${list.length ? list.map(baseRow).join("") : `<div class="empty">${DB_ICON}Баз пока нет — нажмите «Добавить базу»</div>`}</div>
+      </div>`;
+    $("#base-add").onclick = () => baseForm({});
+    page.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => baseForm(list.find((x) => x.id === b.dataset.edit)));
+    page.querySelectorAll("[data-bcheck]").forEach((b) => b.onclick = () => checkBase(b.dataset.bcheck, b));
+    page.querySelectorAll("[data-bdel]").forEach((b) => b.onclick = () => deleteBase(b.dataset.bdel));
+  }
+  function baseRow(b) {
+    const c = b.check;
+    const state = !b.toolkit_url ? '<span class="chip">демо, без MCP Toolkit</span>'
+      : !b.token_set ? '<span class="chip warn">нет токена</span>'
+      : !c ? '<span class="chip">не проверялась</span>'
+      : c.ok ? '<span class="chip ok">работает</span>' : '<span class="chip bad">ошибка</span>';
+    const extra = [b.toolkit_url || b.id];
+    if (b.toolkit_url) extra.push(b.write ? "запись разрешена" : "только чтение");
+    if (b.owners.length) extra.push(b.owners.map((o) => o.name).join(", "));
+    return `<div class="item"><div class="row">
+        <div class="avatar" style="background:var(--accent-soft);color:var(--accent)">${DB_ICON}</div>
+        <div class="grow"><div class="ellipsis"><b>${esc(b.title)}</b> <span class="muted">${b.tags.map((t) => "#" + esc(t)).join(" ")}</span></div>
+          <div class="hint ellipsis">${esc(extra.join(" · "))}</div></div>
+        ${state}
+        ${b.toolkit_url ? `<button class="btn sm" data-bcheck="${esc(b.id)}">Проверить</button>` : ""}
+        <button class="icon-btn" title="Изменить" data-edit="${esc(b.id)}"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg></button>
+        <button class="icon-btn" title="Удалить" data-bdel="${esc(b.id)}">${ICON.x}</button></div>
+      <div id="bres-${esc(b.id)}">${c ? baseCheck(c) : ""}</div></div>`;
+  }
+  function baseCheck(c) {
+    const body = c.ok
+      ? `<b>Подключено:</b> ${esc(c.config)} ${esc(c.version)} · пользователь ${esc(c.user)} · инструментов: ${c.tools}`
+      : `<b>Не работает.</b> ${esc(c.message)}`;
+    const when_ = c.at ? `<span class="hint" style="float:right">${esc(ago(c.at))}</span>` : "";
+    return `<div class="check-res ${c.ok ? "ok" : "bad"}" style="margin-top:10px">${when_}${body}</div>`;
+  }
+  async function checkBase(id, btn) {
+    const box = $("#bres-" + id);
+    btn.disabled = true;
+    box.innerHTML = `<div class="check-res" style="margin-top:10px"><div class="row"><div class="spinner" style="width:18px;height:18px;border-width:2px"></div>Подключаюсь к базе…</div></div>`;
+    try {
+      const r = await waitJob(await api(`bases/${id}/check`, { method: "POST" }));
+      box.innerHTML = baseCheck({ ...r, at: new Date().toISOString() });
+    } catch (e) { box.innerHTML = `<div class="check-res bad" style="margin-top:10px">${esc(e.message)}</div>`; }
+    btn.disabled = false;
+  }
+  async function deleteBase(id) {
+    if (!(await confirmBox("Удалить базу из списка?", `База «${id}» исчезнет из списка, её токен будет удалён. Сама база 1С не меняется.`, "Удалить", true))) return;
+    try { await api("bases/" + id, { method: "DELETE" }); toast("База удалена из списка"); basesPage(); } catch (e) { toast(e.message, true); }
+  }
+  function baseForm(b) {
+    const isNew = !b.id;
+    const owners = (b.owners || []).map((o) => ({ ...o }));
+    const tokenHint = b.token_set ? "задан — оставьте пустым, чтобы не менять" : "из поля «Токен доступа» в форме MCP Toolkit";
+    drawer(`<h3>${isNew ? "Новая база" : "База «" + esc(b.title) + "»"}</h3>
+      <div class="field" style="margin-top:16px"><label for="bf-title">Название</label><input type="text" id="bf-title" value="${esc(b.title || "")}" placeholder="ГКЭ у Ивана Бубнова"></div>
+      <div class="field"><label for="bf-id">Код базы</label><input type="text" id="bf-id" value="${esc(b.id || "")}" ${isNew ? "" : "disabled"} placeholder="gke_ivan — латиница, цифры, _"></div>
+      <div class="field"><label for="bf-tags">Хэштеги</label><input type="text" id="bf-tags" value="${esc((b.tags || []).join(", "))}" placeholder="гке, гкеиван"><div class="hint">По ним сотрудник выбирает базу в вопросе: «#гке …»</div></div>
+      <div class="field"><label for="bf-url">Адрес MCP Toolkit</label><input type="text" id="bf-url" value="${esc(b.toolkit_url || "")}" placeholder="http://192.168.0.51:6003/mcp"><div class="hint">IP компьютера сотрудника и порт из формы MCP Toolkit</div></div>
+      <div class="field"><label for="bf-token">Токен MCP Toolkit</label><input type="password" id="bf-token" autocomplete="new-password" placeholder="${esc(tokenHint)}"></div>
+      <div class="field"><label class="row" style="gap:8px"><input type="checkbox" id="bf-write" ${b.write ? "checked" : ""}> Разрешить боту изменять данные в базе</label><div class="hint">Без подтверждения. В форме MCP Toolkit включите автоподтверждение «Записать». Удаление объектов MCP Toolkit блокирует всегда.</div></div>
+      <div class="field"><label>Кто может работать с базой</label><div id="bf-owners"></div>
+        <div class="search" style="margin-top:6px"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg><input type="search" id="bf-q" placeholder="Добавить сотрудника — фамилия"></div>
+        <div class="list" id="bf-found"></div><div class="hint">Пусто — все, кому отвечает бот.</div></div>
+      <div class="savebar"><button class="btn ghost" data-close>Отмена</button><button class="btn primary" id="bf-save">Сохранить</button></div>`);
+    const drawOwners = () => {
+      $("#bf-owners").innerHTML = owners.length
+        ? owners.map((o, i) => `<span class="chip accent" style="margin:0 6px 6px 0">${esc(o.name)} <a href="#" data-orm="${i}" title="Убрать">✕</a></span>`).join("")
+        : '<span class="hint">все</span>';
+      $("#bf-owners").querySelectorAll("[data-orm]").forEach((a) => a.onclick = (e) => { e.preventDefault(); owners.splice(+a.dataset.orm, 1); drawOwners(); });
+    };
+    drawOwners();
+    let timer;
+    $("#bf-q").oninput = (e) => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const q = e.target.value.trim();
+        if (!q) { $("#bf-found").innerHTML = ""; return; }
+        const r = await api(`directory?q=${encodeURIComponent(q)}`);
+        $("#bf-found").innerHTML = r.people.slice(0, 6).map((p) => `<div class="item row"><span class="grow ellipsis">${esc(p.name)} <span class="hint">${esc(p.post || "")}</span></span><button class="btn sm" data-oadd="${esc(p.id)}" data-oname="${esc(p.name)}">${ICON.plus}</button></div>`).join("");
+        $("#bf-found").querySelectorAll("[data-oadd]").forEach((btn) => btn.onclick = () => {
+          if (!owners.some((o) => o.id === btn.dataset.oadd)) owners.push({ id: btn.dataset.oadd, name: btn.dataset.oname });
+          drawOwners();
+        });
+      }, 250);
+    };
+    $("#bf-save").onclick = async () => {
+      const body = { id: $("#bf-id").value.trim(), title: $("#bf-title").value.trim(), tags: $("#bf-tags").value,
+        toolkit_url: $("#bf-url").value.trim(), token: $("#bf-token").value, write: $("#bf-write").checked,
+        owners: owners.map((o) => o.id) };
+      try { await api("bases", { method: "POST", body }); $("#drawer").hidden = true; toast("База сохранена — нажмите «Проверить»"); basesPage(); }
+      catch (e) { toast(e.message, true); }
+    };
+  }
+
   // --- журнал ---
   const jstate = { status: "", user: "", q: "", rows: [], more: false };
   async function journal(append = false) {
@@ -355,6 +455,7 @@
     { k: "claude", title: "Claude Code", text: "Запускает один короткий вопрос с настройками бота: версия CLI, вход в подписку, только нужные инструменты. Тратит один небольшой запрос подписки." },
     { k: "connect", title: "API 1С-Коннекта", text: "Проверяет логин и пароль API и заново загружает справочник сотрудников." },
     { k: "counterparty", title: "Проверка контрагента", text: "Запрос в сервис 1С CounterpartyCheck по БИН/ИИН — долг и неподписанные ЭАВР.", input: true },
+    { k: "dev", title: "Сборка обработки", text: "Собирает пустую внешнюю обработку на сервере: установлены ли скиллы 1С, есть ли платформа и лицензия. Нужна, чтобы бот присылал готовые .epf/.erf." },
     { k: "kb", title: "База знаний", text: "Полная переиндексация папки «База знаний». Обычно бот делает это сам, когда файлы меняются." },
   ];
   async function checks() {
@@ -390,6 +491,7 @@
       ${r.specialists != null ? `<div>Специалистов линий: ${r.specialists}</div>` : ""}${r.directory != null ? `<div>Справочник: ${r.directory} сотрудников</div>` : ""}
       ${r.directory_error ? `<div>Справочник: ${esc(r.directory_error)}</div>` : ""}${r.error ? `<pre>${esc(r.error)}</pre>` : ""}</div>`;
     if (k === "counterparty") return `<div class="check-res ${r.status === "ok" ? "ok" : r.status === "needs_manager" ? "" : "bad"}">${stamp}<b>${esc(r.name || "Контрагент")}</b><div>${esc(r.summary)}</div>${r.error ? `<pre>${esc(r.error)}</pre>` : ""}</div>`;
+    if (k === "dev") return `<div class="check-res ${r.ok ? "ok" : "bad"}">${stamp}<b>${r.ok ? `Собрано за ${r.seconds} с (${r.size_kb} КБ)` : "Сборка не удалась"}</b>${r.platform ? `<div class="hint">Платформа: ${esc(r.platform)}</div>` : ""}${r.error ? `<pre>${esc(r.error)}</pre>` : ""}</div>`;
     if (k === "kb") return `<div class="check-res ok">${stamp}<b>Собрано: ${r.indexed} ${plural(r.indexed, "документ", "документа", "документов")}</b>
       <div class="hint">дублей пропущено: ${r.duplicates}, исключено правилами: ${r.excluded}</div>
       ${r.unsupported && r.unsupported.length ? `<div class="hint">не читаются: ${esc(r.unsupported.join(", "))}</div>` : ""}
@@ -520,6 +622,7 @@
   const PAGES = {
     overview: ["Обзор", "Состояние бота и статистика", overview],
     people: ["Сотрудники", "Кому бот отвечает в личных сообщениях 1С-Коннекта", people],
+    bases: ["Базы 1С", "Копии клиентских баз на ПК сотрудников, подключённые через MCP Toolkit", basesPage],
     journal: ["Журнал", "Все вопросы сотрудников и ответы бота", () => journal()],
     checks: ["Проверки", "Проверить связь с Claude, 1С-Коннектом, 1С и базой знаний", checks],
     settings: ["Настройки", "Изменения применяются сразу, перезапуск не нужен", settingsPage],

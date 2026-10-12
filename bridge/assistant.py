@@ -21,9 +21,10 @@ from pathlib import Path
 from typing import Callable
 
 from bridge.access import Base, User, load_bases, load_users, pick_base
+from bridge import onec_toolkit, toolkit_secrets
 from bridge.answer import clean_answer
 from bridge.claude_runner import ClaudeRunner, RunResult
-from bridge.config import Settings
+from bridge.config import REPO_ROOT, Settings
 from bridge.mcp_config_builder import allowed_tools, build_mcp_config
 from bridge.store import Store, now
 from common.doc_extract import SUPPORTED_EXTENSIONS, extract_text
@@ -41,6 +42,19 @@ HELP = (
     "Проверка контрагента: «проверь контрагента 750710450345» — долг и неподписанные ЭАВР.\n"
     "Можно прислать скриншот, PDF или файл вместе с вопросом.\n"
     "Команды: /базы — список баз, /новый — начать разговор заново."
+)
+
+
+TOOLKIT_HELP = (
+    "Как подключить свою копию базы к помощнику:\n"
+    "1. В своей копии базы задайте пользователю «Администратор» пароль 1 (именно 1, не рабочий пароль).\n"
+    "2. Запустите employee_toolkit.ps1 правой кнопкой → «Выполнить с помощью PowerShell»: он откроет порт для "
+    "сервера помощника и создаст ярлык «1С + MCP Toolkit».\n"
+    "3. Откройте базу этим ярлыком. В окне MCP Toolkit: режим «Встроенный сервер», «Сгенерировать» токен, "
+    "включите автоподтверждение «Записать», нажмите «Запустить сервер». Окно не закрывайте.\n"
+    "4. Сообщите администратору помощника адрес из окна скрипта и токен — он добавит базу в панели, "
+    "и её можно будет выбирать хэштегом.\n"
+    "MCP_Toolkit.epf — для 64-разрядной 1С, MCP_Toolkit_x86.epf — для 32-разрядной."
 )
 
 
@@ -70,6 +84,7 @@ class Assistant:
         self._kb_checked_at: float | None = None
         self._kb_lock = threading.Lock()
         self.kb_last: dict = {}      # итог последней переиндексации — для панели
+        self.toolkit_checks: dict[str, onec_toolkit.ProbeResult] = {}   # база → последняя полная проверка
 
     def refresh_knowledge_base(self, force: bool = False) -> None:
         """Папку «База знаний» пополняют — индекс догоняет её сам."""
@@ -160,6 +175,11 @@ class Assistant:
                          "command")
         if cmd in ("/помощь", "/help"):
             return Reply(HELP, "command")
+        if cmd in ("/toolkit", "/тулкит", "/мсп"):
+            files = [f for f in (REPO_ROOT / "tools" / "MCP_Toolkit.epf", REPO_ROOT / "tools" / "MCP_Toolkit_x86.epf",
+                                 REPO_ROOT / "scripts" / "employee_toolkit.ps1") if f.is_file()]
+            return Reply(TOOLKIT_HELP if files else "Обработка MCP Toolkit на сервере не установлена — "
+                         "попросите администратора выполнить scripts/install_1c_skills.ps1.", "command", files)
         if cmd in ("/id", "/ид"):
             return Reply(f"Ваш user_id: {job.user.key}", "command")
         return None
@@ -196,6 +216,11 @@ class Assistant:
         session = self.store.session(job.user.key, choice.base.id if choice.base else None,
                                      self.settings.idle_timeout_minutes, keep_base=choice.base is None)
         base = bases.get(session.base_id) if session.base_id else None
+        extra_env: dict[str, str] = {}
+        if base is not None and base.via_toolkit:
+            refusal, extra_env = self._toolkit_gate(job, base, started)
+            if refusal:
+                return refusal
         if job.on_start:
             job.on_start()
         self.refresh_knowledge_base()
@@ -208,20 +233,54 @@ class Assistant:
         attachments = [Path(shutil.move(str(p), attach_dir / p.name)) for p in job.attachments if p.exists()]
 
         mcp_config = build_mcp_config(self.settings, base_id=base.id if base else None, outbox=outbox,
-                                      attachments=attach_dir, target=workdir / "mcp" / f"{job_id}.json")
+                                      attachments=attach_dir, target=workdir / "mcp" / f"{job_id}.json", base=base)
         result = self.runner.run(
             question=self._compose(job.user, base, question, attachments),
             session_id=session.session_id, is_new=session.is_new, cwd=workdir,
             mcp_config=mcp_config,
             allowed=allowed_tools(base.id if base else None, self.settings.counterparty_check_enabled,
-                                  self.settings.onec_code.enabled),
+                                  self.settings.onec_code.enabled, base=base, dev=self.settings.dev.enabled),
+            extra_env=extra_env,
         )
         return self._finish(job, base, question, result, outbox, started)
+
+    TOOLKIT_RECHECK_SECONDS = 900
+
+    def _toolkit_gate(self, job: Job, base: Base, started: float) -> tuple[Reply | None, dict[str, str]]:
+        """База на ПК сотрудника: закреплена ли за ним, есть ли токен, открыта ли,
+        и открыта ли под «Администратор»/«1». Всё — до запуска Claude, без траты лимита."""
+        def refuse(text: str, status: str = "toolkit") -> tuple[Reply, dict]:
+            self._log(job, base.id, status, started, error=text)
+            return Reply(text, status), {}
+
+        if not base.allowed_for(job.user.key):
+            return refuse(f"База «{base.title}» закреплена за другим сотрудником.", "denied")
+        token = toolkit_secrets.get_token(base.id)
+        if not token:
+            return refuse(f"Для базы «{base.title}» не задан токен MCP Toolkit — внесите его в панели "
+                          "управления, раздел «Базы 1С».")
+        alive, why = onec_toolkit.health(base.toolkit_url)
+        if not alive:
+            self.toolkit_checks.pop(base.id, None)
+            return refuse(f"База «{base.title}» сейчас недоступна ({why}). Откройте базу ярлыком «1С + MCP Toolkit» "
+                          "или в обработке MCP Toolkit нажмите «Запустить сервер», и повторите вопрос.")
+        last = self.toolkit_checks.get(base.id)
+        if last is None or not last.ok or time.time() - last.checked_at > self.TOOLKIT_RECHECK_SECONDS:
+            last = onec_toolkit.probe(base.toolkit_url, token)
+            self.toolkit_checks[base.id] = last
+        if not last.ok:
+            return refuse(last.message)
+        return None, {toolkit_secrets.env_name(base.id): token}
 
     def _compose(self, user: User, base: Base | None, question: str, attachments: list[Path]) -> str:
         parts = [f"Сотрудник: {user.name}",
                  f"База 1С: {base.title}" if base else "База 1С не выбрана (только база знаний).",
                  "", "Вопрос:", question or "(без текста — см. вложения)"]
+        check = self.toolkit_checks.get(base.id) if base is not None and base.via_toolkit else None
+        if check is not None:
+            parts[2:2] = [f"Подключение: MCP Toolkit {base.toolkit_url}, пользователь {check.user}, конфигурация "
+                          f"{check.config_title or check.config} {check.version}. "
+                          + ("Запись в базу разрешена (execute_code)." if base.write else "Только чтение.")]
         for p in attachments:
             parts.append("")
             if p.suffix.lower() in SUPPORTED_EXTENSIONS:

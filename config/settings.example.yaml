@@ -45,6 +45,10 @@ onec_code:
   config_path: "onec_rag/config.json"
 
 port: 8010                      # локальный порт моста, наружу не открывается
+# Сборка внешних обработок и отчётов на сервере (scripts/install_1c_skills.ps1).
+dev:
+  v8_path: ""                   # пусто — последняя 8.3 в Program Files/1cv8; иначе каталог bin платформы
+
 users_path: "config/users.yaml"
 bases_path: "config/bases.yaml"
 

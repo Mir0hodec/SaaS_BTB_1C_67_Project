@@ -33,3 +33,4 @@ bilgir_backup_*.zip
 .claude/
 config/*.bak
 .venv/
+.secrets/
