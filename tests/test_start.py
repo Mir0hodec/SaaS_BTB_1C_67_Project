@@ -42,7 +42,7 @@ def test_tunnel_url_is_caught_and_hook_is_set(tmp_path, monkeypatch, repo_root):
     assert hooks == []
     s.connect.line_id = "ai-line"
     start.set_hook(s, url)
-    assert hooks == [{"line_id": "ai-line", "url": url + "/connect/hook", "token": "tok"}]
+    assert hooks == [{"line_id": "ai-line", "url": url + "/connect/hook", "token": "tok", "kind": "line"}]
 
 
 def test_hook_skipped_without_credentials(monkeypatch, repo_root, tmp_path, capsys):

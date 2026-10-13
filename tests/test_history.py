@@ -60,6 +60,19 @@ def test_parse_chat_html_authors_dates_and_multiline():
     assert parse_chat_html(name, html, BOT)[0].message_id == msgs[0].message_id   # стабильный id
 
 
+def test_consecutive_messages_without_author_name():
+    """Второе сообщение подряд в истории 1С-Коннекта приходит без имени автора — это тот же автор."""
+    name, html = next(iter(igor_file([
+        ("Бубнов Игорь Сергеевич", "первый вопрос", "10:00:05"),
+        ("", "и ещё уточнение", "10:00:20"),
+        ("Александр", "Принял", "10:00:30"),
+        ("", "Ответ готов", "10:02:00"),
+    ]).items()))
+    msgs = parse_chat_html(name, html, BOT)
+    assert [(m.author_id, m.text) for m in msgs] == [
+        (IGOR, "первый вопрос"), (IGOR, "и ещё уточнение"), (BOT, "Принял"), (BOT, "Ответ готов")]
+
+
 def test_parse_response_several_pairs_and_limit():
     files = {**igor_file([("Бубнов Игорь Сергеевич", "привет", "11:00:00")]),
              f"ChatHistory/ChatHistory_Collegue_{OLGA}_{BOT}_2026-10-09.html":

@@ -135,11 +135,12 @@ def set_hook(settings: Settings, base_url: str) -> bool:
     for attempt in range(3):
         try:
             ConnectClient(cs.api_base_url, cs.login, cs.password).set_hook(
-                line_id=cs.line_id, url=url, token=cs.webhook_token)
-            say(f"вебхук 1С-Коннект → {url}")
+                line_id=cs.line_id, url=url, token=cs.webhook_token, kind=cs.line_hook)
+            say(f"вебхук 1С-Коннект ({cs.line_hook}) → {url}")
             return True
         except ConnectError as exc:
-            hint = " — в карточке линии не включён «Внешний сервер для обработки данных»?" if "403" in str(exc) else ""
+            hint = (" — бот-подписка на учётку API одна (у старого бота): connect.line_hook: line"
+                    if "403" in str(exc) and cs.line_hook == "bot" else "")
             say(f"SetHook не удался ({exc}){hint}")
             if attempt < 2:
                 time.sleep(10)

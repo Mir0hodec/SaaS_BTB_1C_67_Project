@@ -91,22 +91,25 @@ def parse_chat_html(file_name: str, html: str, bot_id: str) -> list[ColleagueMes
     by_name = {names[0]: id1, names[1]: id2}
     colleague = id2 if id1 == bot_id.lower() else id1
 
-    messages, date = [], ""
+    messages, date, last_author = [], "", None
     for row in _ROW_RE.findall(html):
         cells = _CELL_RE.findall(row)
         if len(cells) == 1:
             found = _DATE_RE.search(_text(cells[0]))
             date = found.group(0) if found else date
+            last_author = None
             continue
         if len(cells) < 3:
             continue
         author, text, time = _text(cells[0]), _text(cells[1]), _text(cells[2])
         if not _TIME_RE.fullmatch(time) or not text:
             continue
-        author_id = by_name.get(author)
+        # Несколько сообщений подряд от одного человека: имя стоит только у первого.
+        author_id = by_name.get(author) if author else last_author
         if author_id is None:
             log.warning("автор «%s» не совпал с именами в заголовке %s — сообщение пропущено", author, file_name)
             continue
+        last_author = author_id
         messages.append(ColleagueMessage(
             message_id=message_id((id1, id2), date, time, author_id, text), colleague_id=colleague,
             author_id=author_id, text=text, sent_at=f"{date}T{time}" if date else time))

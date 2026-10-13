@@ -108,7 +108,8 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
     store = Store(settings.data_dir / "bridge.sqlite3")
     assistant = assistant or Assistant(settings, store)
     cs = settings.connect
-    connect = connect or ConnectClient(cs.api_base_url, cs.login, cs.password, timeout=cs.request_timeout_seconds)
+    connect = connect or ConnectClient(cs.api_base_url, cs.login, cs.password, timeout=cs.request_timeout_seconds,
+                                       bot_as_spec=cs.line_hook != "bot")
     worker = Worker(assistant)
     stop_listening = threading.Event()
     history_status = connect_history.HistoryStatus()

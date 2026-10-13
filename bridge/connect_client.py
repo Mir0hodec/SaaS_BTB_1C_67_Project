@@ -9,9 +9,11 @@ https://1c-connect.atlassian.net/wiki/spaces/PUBLIC/pages/1349877768/4.2.+API
   POST /v1/line/send/file/     SendFileLine — файл в чат (multipart: meta + file)
 Авторизация — HTTP Basic. Ограничения: 20 запросов/с, 600/мин (иначе 429).
 
-На линии бот работает в режиме «внешний сервер обработки» (SetHook type=bot): сообщения
-уходят без bot_as_spec — иначе обращение передаётся специалисту и события боту больше
-не приходят. На каждое сообщение пользователя бот обязан ответить за 30 секунд.
+Подписка на линию — SetHook type=line (по умолчанию) или type=bot. На одну учётку API
+1С-Коннект даёт одну бот-подписку (её держит старый бот на своей линии), поэтому своя
+линия — type=line, а ответы — от имени специалиста (bot_as_spec): прямая отправка «как бот»
+без бот-подписки даёт {"error":"Hook not exposed"}. В режиме bot — наоборот, без bot_as_spec,
+иначе обращение уходит специалисту и события боту перестают приходить.
 """
 from __future__ import annotations
 
@@ -30,7 +32,8 @@ class ConnectError(Exception):
 
 class ConnectClient:
     def __init__(self, base_url: str, login: str, password: str, timeout: float = 60,
-                 retries: int = 3, session: requests.Session | None = None):
+                 retries: int = 3, session: requests.Session | None = None, bot_as_spec: bool = True):
+        self.bot_as_spec = bot_as_spec
         self.base_url = base_url.rstrip("/")
         self.auth = (login, password)
         self.timeout = timeout
@@ -60,13 +63,13 @@ class ConnectClient:
     def send_message(self, *, line_id: str, user_id: str, author_id: str, text: str) -> None:
         self._post("/v1/line/send/message/", json={
             "line_id": line_id, "user_id": user_id, "author_id": author_id,
-            "text": text,
+            "text": text, **({"bot_as_spec": True} if self.bot_as_spec else {}),
         })
 
     def send_file(self, *, line_id: str, user_id: str, author_id: str, path: Path,
                   comment: str | None = None) -> None:
         meta = {"line_id": line_id, "user_id": user_id, "author_id": author_id,
-                "file_name": path.name}
+                "file_name": path.name, **({"bot_as_spec": True} if self.bot_as_spec else {})}
         if comment:
             meta["comment"] = comment
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -95,9 +98,9 @@ class ConnectClient:
                 "file": (path.name, f, mime),
             })
 
-    def set_hook(self, *, line_id: str, url: str, token: str) -> None:
+    def set_hook(self, *, line_id: str, url: str, token: str, kind: str = "line") -> None:
         self._post("/v1/hook/", json={
-            "type": "bot", "id": line_id, "url": url,
+            "type": kind, "id": line_id, "url": url,
             "back_auth": {"type": "bearer", "token": token},
         })
 
