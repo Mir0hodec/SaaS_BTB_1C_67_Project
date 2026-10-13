@@ -2,6 +2,7 @@
 
     python scripts/test_base.py create            создать базу, внести её в панель как #тест
     python scripts/test_base.py open              открыть базу с MCP Toolkit (порт 6013)
+    python scripts/test_base.py status            цены и проведение поступлений — что исправил бот
     python scripts/test_base.py remove            убрать из панели и удалить базу
 
 Конфигурация «ТестПомощника»: номенклатура, контрагенты, поступления товаров,
@@ -277,6 +278,25 @@ def open_base(settings: Settings, path: Path, password: str, port: int = PORT) -
     sys.exit("MCP Toolkit не ответил за 3 минуты — посмотрите окно 1С.")
 
 
+STATUS_QUERY = (
+    "ВЫБРАТЬ \"Номенклатура\" КАК Вид, Н.Наименование КАК Имя, Н.Цена КАК Значение ИЗ Справочник.Номенклатура КАК Н "
+    "ОБЪЕДИНИТЬ ВСЕ ВЫБРАТЬ \"Поступление\", Д.Номер, ВЫБОР КОГДА Д.Проведен ТОГДА 1 ИНАЧЕ 0 КОНЕЦ "
+    "ИЗ Документ.ПоступлениеТоваров КАК Д")
+
+
+def status(port: int = PORT) -> None:
+    from bridge import onec_toolkit
+    url = f"http://127.0.0.1:{port}/mcp"
+    alive, why = onec_toolkit.health(url)
+    if not alive:
+        sys.exit(f"База не открыта ({why}). Сначала: python scripts/test_base.py open")
+    _tools, (text,) = onec_toolkit.call(url, toolkit_secrets.get_token(BASE_ID),
+                                        [("execute_query", {"query": STATUS_QUERY})])
+    data = json.loads(text).get("data", text)
+    print(data if isinstance(data, str) else json.dumps(data, ensure_ascii=False, indent=1))
+    print("Поступление: 1 — проведено, 0 — нет. У «Сахар» исходно цена 0, третье поступление не проведено.")
+
+
 def remove(settings: Settings, path: Path) -> None:
     try:
         remove_section(settings.bases_path, BASE_ID)
@@ -290,7 +310,7 @@ def remove(settings: Settings, path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("action", choices=["create", "open", "remove"])
+    parser.add_argument("action", choices=["create", "open", "status", "remove"])
     parser.add_argument("--path", type=Path, default=DEFAULT_PATH)
     parser.add_argument("--password", default="1", help="пароль Администратора в тестовой базе (по умолчанию 1)")
     parser.add_argument("--port", type=int, default=PORT, help="порт MCP Toolkit для open")
@@ -298,6 +318,7 @@ def main() -> None:
     settings = Settings.load()
     {"create": lambda: create(settings, args.path, args.password),
      "open": lambda: open_base(settings, args.path, args.password, args.port),
+     "status": lambda: status(args.port),
      "remove": lambda: remove(settings, args.path)}[args.action]()
 
 
