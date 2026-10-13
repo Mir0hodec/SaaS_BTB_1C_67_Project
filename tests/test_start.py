@@ -72,3 +72,23 @@ def test_line_setup_xml():
     table = ls._table([("ServiceUserID", "string"), ("ServiceID", "string")], [["u1", "l1"], ["u2", "l1"]])
     assert table.count("<d:row>") == 2 and "<d:Name>ServiceUserID</d:Name>" in table
     assert "&lt;" in ls._prop("Name", "string", "<x>")
+
+
+def test_line_link_retries_hook_until_accepted(monkeypatch, repo_root, tmp_path):
+    """403 до включения внешнего сервера в карточке линии — бот повторяет SetHook сам, туннель не трогает."""
+    monkeypatch.setattr(start, "LOG_DIR", tmp_path)
+    s = Settings.load(repo_root / "config" / "settings.example.yaml")
+    s.connect.line_id = "ai-line"
+    monkeypatch.setattr(start.Settings, "load", lambda *a, **k: s)
+
+    class Tunnel:
+        def poll(self):
+            return None
+    tunnels, answers = [], [False, False, True]
+    monkeypatch.setattr(start, "start_tunnel", lambda: (tunnels.append(1) or Tunnel(), "https://x.trycloudflare.com"))
+    monkeypatch.setattr(start, "set_hook", lambda settings, url: answers.pop(0))
+    link = start.LineLink("tunnel")
+    link.RETRY_SECONDS = 0
+    for _ in range(4):
+        link.tick()
+    assert link.hooked and len(tunnels) == 1 and answers == []
