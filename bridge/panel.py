@@ -6,7 +6,7 @@
 запрос к API панели несёт токен из страницы (X-Panel-Token) — чужая
 страница в браузере сервера не сможет ничего нажать.
 
-Изменения настроек пишутся в config/settings.yaml и config/users.yaml одной
+Изменения настроек пишутся в config/settings.yaml и config/bases.yaml одной
 строкой (комментарии сохраняются) и применяются сразу, без перезапуска.
 """
 from __future__ import annotations
@@ -28,7 +28,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
-import yaml
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
@@ -36,7 +35,6 @@ from bridge import docs, onec_extension, onec_toolkit, toolkit_secrets
 from bridge.access import load_bases
 from bridge.config import REPO_ROOT, Settings
 from bridge.connect_directory import Directory, DirectoryError
-from bridge.connect_history import HistoryStatus
 from bridge.store import Store
 from common.yaml_edit import YamlEditError, remove_section, set_value
 
@@ -116,8 +114,7 @@ def _tail(path: Path, lines: int) -> list[str]:
     return data.splitlines()[-lines:]
 
 
-def panel_router(*, settings: Settings, store: Store, assistant, worker, directory: Directory,
-                 history: HistoryStatus, started_at: float,
+def panel_router(*, settings: Settings, store: Store, assistant, worker, directory: Directory, started_at: float,
                  local_clients: frozenset[str] = frozenset({"127.0.0.1", "::1", "localhost"})) -> APIRouter:
     r = APIRouter()
     token = secrets.token_urlsafe(24)
@@ -215,17 +212,6 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
             "series": [{"date": d.isoformat(), **v, "cost": round(v["cost"], 4)} for d, v in sorted(series.items())],
         }
 
-    def receiver() -> dict:
-        cs = settings.connect
-        snap = history.snapshot()
-        for t in snap["targets"]:
-            t["name"] = name_of(t["colleague_id"])
-            person = directory.get(t["colleague_id"])
-            t["post"] = person.post if person else ""
-        return {"channel": cs.channel, "receive": cs.receive, "bot_id": cs.bot_specialist_id,
-                "bot_name": directory.name(cs.bot_specialist_id) if cs.bot_specialist_id else None,
-                "credentials": bool(cs.login and cs.password), **snap}
-
     def line_view() -> dict:
         """Своя линия «ИИ-помощник»: состояние туннеля и вебхука пишет супервизор (logs/line.json)."""
         cs = settings.connect
@@ -273,7 +259,6 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
             "limit_until": limit_until,
             "queue": worker.queue.qsize(),
             "current": current,
-            "receiver": receiver(),
             "stats": stats(),
             "recent": recent,
             "model": settings.claude.model, "model_name": MODELS.get(settings.claude.model, settings.claude.model),
@@ -305,70 +290,6 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
 
     # --- сотрудники ---
 
-    def users_yaml() -> dict:
-        try:
-            return yaml.safe_load(settings.users_path.read_text(encoding="utf-8")) or {}
-        except FileNotFoundError:
-            return {}
-
-    def colleagues_view() -> list[dict]:
-        states = {t["colleague_id"]: t for t in history.snapshot()["targets"]}
-        deny = {str(x).lower() for x in users_yaml().get("deny") or []}
-        out = []
-        for cid in settings.connect.history_colleagues:
-            person = directory.get(cid)
-            out.append({"id": cid, "name": person.full_name if person else cid,
-                        "post": person.post if person else "", "email": person.email if person else "",
-                        "known": person is not None, "denied": cid.lower() in deny,
-                        "status": states.get(cid.lower())})
-        return out
-
-    def save_colleagues(ids: list[str]) -> None:
-        set_value(settings.source, ("connect", "history_colleagues"), ids)
-        settings.connect.history_colleagues = ids
-
-    @r.get("/panel/api/colleagues")
-    def colleagues(request: Request) -> dict:
-        guard(request, api=True)
-        return {"colleagues": colleagues_view(), "interval": settings.connect.history_interval_seconds,
-                "directory_loaded_at": directory.loaded_at or None}
-
-    @r.post("/panel/api/colleagues")
-    async def add_colleague(request: Request) -> dict:
-        guard(request, api=True)
-        cid = str((await request.json()).get("id", "")).strip().lower()
-        if not UUID_RE.match(cid):
-            raise HTTPException(400, "неверный ID сотрудника")
-        if cid == settings.connect.bot_specialist_id.lower():
-            raise HTTPException(400, "это учётная запись самого бота")
-        ids = list(settings.connect.history_colleagues)
-        if cid in (x.lower() for x in ids):
-            raise HTTPException(409, "сотрудник уже в списке")
-        notes = []
-        try:
-            save_colleagues([*ids, cid])
-            deny = [str(x) for x in users_yaml().get("deny") or []]
-            if cid in (x.lower() for x in deny):
-                set_value(settings.users_path, ("deny",), [x for x in deny if x.lower() != cid])
-                notes.append("убран из списка запрета (deny) в users.yaml")
-        except YamlEditError as exc:
-            raise HTTPException(500, str(exc)) from None
-        log.info("панель: добавлен сотрудник %s", cid)
-        return {"colleagues": colleagues_view(), "notes": notes}
-
-    @r.delete("/panel/api/colleagues/{cid}")
-    def remove_colleague(cid: str, request: Request) -> dict:
-        guard(request, api=True)
-        ids = [x for x in settings.connect.history_colleagues if x.lower() != cid.lower()]
-        if len(ids) == len(settings.connect.history_colleagues):
-            raise HTTPException(404, "сотрудника нет в списке")
-        try:
-            save_colleagues(ids)
-        except YamlEditError as exc:
-            raise HTTPException(500, str(exc)) from None
-        log.info("панель: убран сотрудник %s", cid)
-        return {"colleagues": colleagues_view()}
-
     @r.get("/panel/api/directory")
     def directory_search(request: Request, q: str = "", refresh: int = 0) -> dict:
         guard(request, api=True)
@@ -379,14 +300,12 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
                 if refresh:
                     raise HTTPException(502, f"справочник 1С-Коннект не загрузился: {exc}") from None
         words = [w for w in q.lower().replace("ё", "е").split() if w]
-        chosen = {x.lower() for x in settings.connect.history_colleagues}
         found = []
         for p in directory.all():
             hay = f"{p.full_name} {p.post} {p.email}".lower().replace("ё", "е")
             if p.deleted or (words and not all(w in hay for w in words)) or p.id == settings.connect.bot_specialist_id:
                 continue
-            found.append({"id": p.id, "name": p.full_name, "post": p.post, "email": p.email,
-                          "added": p.id in chosen})
+            found.append({"id": p.id, "name": p.full_name, "post": p.post, "email": p.email})
         return {"people": found[:40], "total": len(found), "loaded_at": directory.loaded_at or None}
 
     # --- журнал ---
@@ -417,9 +336,9 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
 
     def settings_view() -> dict:
         c, cs = settings.claude, settings.connect
-        return {"model": c.model, "effort": c.effort, "interval": cs.history_interval_seconds,
+        return {"model": c.model, "effort": c.effort,
                 "ack_text": cs.ack_text, "models": [{"id": k, "name": v} for k, v in MODELS.items()],
-                "efforts": EFFORTS, "colleagues": len(cs.history_colleagues), "version": version,
+                "efforts": EFFORTS, "version": version,
                 "supervised": os.environ.get("BRIDGE_SUPERVISED") == "1", "windows_user": windows_user()}
 
     @r.get("/panel/api/settings")
@@ -441,15 +360,6 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
             if body["effort"] not in EFFORTS:
                 raise HTTPException(400, "неизвестная глубина рассуждений")
             changes.append((("claude", "effort"), body["effort"], lambda v: setattr(settings.claude, "effort", v)))
-        if "interval" in body:
-            try:
-                interval = int(body["interval"])
-            except (TypeError, ValueError):
-                raise HTTPException(400, "интервал — целое число секунд") from None
-            if not 20 <= interval <= 3600:
-                raise HTTPException(400, "интервал — от 20 до 3600 секунд")
-            changes.append((("connect", "history_interval_seconds"), interval,
-                            lambda v: setattr(settings.connect, "history_interval_seconds", v)))
         if "ack_text" in body:
             text = str(body["ack_text"] or "").strip()
             if len(text) > 300 or "\n" in text:
@@ -582,7 +492,7 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
             check = assistant.toolkit_checks.get(b.id)
             kind = "toolkit" if b.via_toolkit else "extension" if b.via_extension else "demo"
             out.append({
-                "id": b.id, "title": b.title, "tags": [t for t in b.tags if t != b.id], "toolkit_url": b.toolkit_url,
+                "id": b.id, "title": b.title, "toolkit_url": b.toolkit_url, "link": b.link,
                 "kind": kind, "url": b.url if b.via_extension else "",
                 "write": b.write, "token_set": b.id in tokens,
                 "owners": [{"id": o, "name": name_of(o)} for o in b.owners],
@@ -623,20 +533,18 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
         title = str(body.get("title") or "").strip()
         if not title:
             raise HTTPException(400, "укажите название базы")
-        tags = [t.strip().lstrip("#").lower() for t in str(body.get("tags") or "").replace(";", ",").split(",")
-                if t.strip().lstrip("#")]
         owners = [str(o).lower() for o in body.get("owners") or [] if UUID_RE.match(str(o).lower())]
         if body.get("kind") == "extension":
             # Опубликованная база с расширением MCP_HTTPService: адрес публикации, без токена, только чтение.
             url = re.sub(r"/hs/mcp-1c(/.*)?$", "", str(body.get("url") or "").strip()).rstrip("/")
             if not PUBLICATION_URL_RE.match(url):
                 raise HTTPException(400, "адрес публикации базы вида http://сервер/ИмяБазы")
-            fields = (("title", title), ("tags", tags), ("mode", "extension"), ("url", url), ("owners", owners))
+            fields = (("title", title), ("mode", "extension"), ("url", url), ("owners", owners))
         else:
             url = str(body.get("toolkit_url") or "").strip()
             if not TOOLKIT_URL_RE.match(url):
                 raise HTTPException(400, "адрес MCP Toolkit вида http://192.168.0.51:6003/mcp")
-            fields = (("title", title), ("tags", tags), ("toolkit_url", url), ("owners", owners),
+            fields = (("title", title), ("toolkit_url", url), ("owners", owners),
                       ("write", bool(body.get("write"))))
         try:
             for key, value in fields:

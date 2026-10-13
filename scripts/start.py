@@ -152,7 +152,7 @@ def set_hook(settings: Settings, base_url: str) -> bool:
 class LineLink:
     """Своя линия: туннель и SetHook. Пока 1С-Коннект не примет вебхук (например, в карточке
     линии ещё не включён внешний сервер обработки), повтор раз в 5 минут — без перезапуска бота.
-    Сбой туннеля не роняет бота: личные сообщения работают дальше."""
+    Сбой туннеля не роняет бота: панель и проверки работают, туннель поднимается заново."""
     RETRY_SECONDS = 300
 
     def __init__(self, mode: str) -> None:
@@ -181,7 +181,7 @@ class LineLink:
             try:
                 self.tunnel, self.url = start_tunnel()
             except (RuntimeError, OSError) as exc:
-                say(f"линия: туннель не запущен ({exc}) — личные сообщения работают как раньше")
+                say(f"линия: туннель не запущен ({exc}) — повтор через 5 минут")
                 self.save_status(f"туннель не запущен: {exc}")
                 return
             say(f"туннель: {self.url}")
@@ -215,16 +215,11 @@ def main() -> int:
         say(f"бот уже запущен — панель управления: http://127.0.0.1:{port()}/panel")
         return 0
     settings = Settings.load()
-    colleague = settings.connect.channel == "colleague"
-    # Токен нужен и в режиме личных сообщений: им закрыт HTTP-приёмник
-    # /connect/colleague/message (проверка, будущий push от 1С-Коннект).
     ensure_webhook_token(settings.connect.webhook_token_env)
     settings = Settings.load()
     mode = settings.connect.webhook_mode
 
     bridge = start_bridge()
-    if colleague:
-        say("личные сообщения: опрос истории 1С-Коннекта (см. logs/bridge.log)")
     line = LineLink(mode)
     while True:
         line.tick()

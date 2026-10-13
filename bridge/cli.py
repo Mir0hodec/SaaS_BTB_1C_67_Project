@@ -2,7 +2,7 @@
 
     python -m bridge.cli                  # от имени первого владельца из users.yaml
     python -m bridge.cli --user <user_id> --attach скриншот.png
-    python -m bridge.cli "#тест почему не проводится поступление?" "исправь"   # вопросы по очереди и выход
+    python -m bridge.cli --base test_base "почему не проводится поступление?" "исправь"   # по очереди и выход
 """
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ def main() -> int:
     parser.add_argument("--settings", type=Path)
     parser.add_argument("--user", help="user_id из users.yaml")
     parser.add_argument("--attach", type=Path, action="append", default=[], help="вложение к первому вопросу")
+    parser.add_argument("--base", help="код базы из bases.yaml (как ссылка на базу в первом вопросе)")
     parser.add_argument("questions", nargs="*", help="вопросы по очереди; без них — диалог в консоли")
     args = parser.parse_args()
 
@@ -54,6 +55,7 @@ def main() -> int:
         attachments.append(copy)
 
     queue = list(args.questions)
+    base_id = args.base
     while True:
         if args.questions:
             if not queue:
@@ -68,8 +70,8 @@ def main() -> int:
         if not text:
             return 0
         reply = assistant.handle(Job(channel="cli", user=user, text=text, attachments=attachments,
-                                     on_start=lambda: print("…работаю")))
-        attachments = []
+                                     on_start=lambda: print("…работаю"), base_id=base_id))
+        attachments, base_id = [], None
         print(reply.text)
         for f in reply.files:
             out_dir.mkdir(parents=True, exist_ok=True)

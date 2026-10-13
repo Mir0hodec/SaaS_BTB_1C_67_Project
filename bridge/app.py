@@ -2,10 +2,9 @@
 
 Запуск:  python scripts/start.py  (или uvicorn bridge.app:app --host 127.0.0.1 --port 8010)
 
-channel: colleague (по умолчанию) — личные сообщения учётной записи бота,
-  транспорт в bridge/connect_adapter.py (приём через «API приложений»,
-  ответ через REST SendMessagecolleague);
-channel: line — линия поддержки, вебхук /connect/hook.
+Сотрудники пишут в свою линию «ИИ-помощник»: 1С-Коннект присылает каждое
+сообщение вебхуком на /connect/hook (туннель и SetHook поднимает scripts/start.py),
+ответ уходит REST SendMessageLine от имени учётной записи бота.
 Входящее сразу ставится в очередь; один рабочий поток отвечает по очереди.
 """
 from __future__ import annotations
@@ -32,12 +31,9 @@ ensure_utf8_stdio()
 from fastapi import FastAPI, Header, HTTPException, Request  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from bridge import connect_history, connect_pipe  # noqa: E402
 from bridge.connect_directory import Directory, fetch_specialists  # noqa: E402
 from bridge.panel import panel_router  # noqa: E402
 from bridge.access import User, resolve_user  # noqa: E402
-from bridge.connect_adapter import ConnectAdapter  # noqa: E402
-from bridge.connect_pipe import ColleagueMessage  # noqa: E402
 from bridge.answer import split_message  # noqa: E402
 from bridge.assistant import Assistant, Job, Reply  # noqa: E402
 from bridge.config import Settings  # noqa: E402
@@ -97,13 +93,11 @@ class Worker:
 class AskRequest(BaseModel):
     question: str
     session: str = "default"
-
-
-MessageSource = Callable[[Callable[[ColleagueMessage], None], threading.Event], None]
+    base: str = ""                     # код базы из bases.yaml; пусто — по ссылке в вопросе
 
 
 def create_app(settings: Settings | None = None, *, connect: ConnectClient | None = None,
-               assistant: Assistant | None = None, colleague_source: MessageSource | None = None) -> FastAPI:
+               assistant: Assistant | None = None) -> FastAPI:
     settings = settings or Settings.load()
     store = Store(settings.data_dir / "bridge.sqlite3")
     assistant = assistant or Assistant(settings, store)
@@ -111,38 +105,15 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
     connect = connect or ConnectClient(cs.api_base_url, cs.login, cs.password, timeout=cs.request_timeout_seconds,
                                        bot_as_spec=cs.line_hook != "bot")
     worker = Worker(assistant)
-    stop_listening = threading.Event()
-    history_status = connect_history.HistoryStatus()
     directory = Directory(store, (lambda: fetch_specialists(cs.login, cs.password))
                           if cs.login and cs.password else None)
-
-    def start_colleague_listener() -> None:
-        source = colleague_source
-        if source is None and cs.receive == "history":
-            if not (cs.bot_specialist_id and cs.login and cs.password):
-                log.error("приём из истории: нужны CONNECT_BOT_SPECIALIST_ID и логин/пароль API — не запущен")
-                return
-            client = connect_history.HistoryClient(cs.login, cs.password, timeout=cs.request_timeout_seconds)
-            source = lambda on_msg, stop: connect_history.poll(  # noqa: E731
-                cs.bot_specialist_id, lambda: cs.history_colleagues, on_msg, stop, fetch=client.fetch,
-                interval=lambda: cs.history_interval_seconds, hours=cs.history_hours, status=history_status)
-        elif source is None:
-            if not cs.agent_login:
-                log.error("режим личных сообщений: не задан %s — приём сообщений не запущен", cs.agent_login_env)
-                return
-            source = lambda on_msg, stop: connect_pipe.listen(cs.agent_login, on_msg, stop)  # noqa: E731
-        threading.Thread(target=source, args=(adapter.accept_pipe, stop_listening),
-                         name="connect-colleague-listener", daemon=True).start()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         threading.Thread(target=assistant.refresh_knowledge_base, kwargs={"force": True}, daemon=True).start()
         worker.start()
-        if cs.channel == "colleague":
-            start_colleague_listener()
         threading.Thread(target=directory.ensure_fresh, daemon=True).start()
         yield
-        stop_listening.set()
         worker.stop()
 
     app = FastAPI(title="ИИ-помощник ГК «Эксперт»", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -173,16 +144,10 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
         return lambda: connect.send_message(line_id=cs.line_id, user_id=user_id,
                                             author_id=cs.bot_specialist_id, text=cs.ack_text)
 
-    # --- личные сообщения сотрудников учётной записи бота ---
-
-    adapter = ConnectAdapter(settings, store, connect,
-                             submit=lambda job, deliver: worker.submit(Task(job=job, deliver=deliver)))
-    app.include_router(adapter.router())
-    app.state.adapter = adapter
     app.include_router(panel_router(settings=settings, store=store, assistant=assistant, worker=worker,
-                                    directory=directory, history=history_status, started_at=time.time()))
+                                    directory=directory, started_at=time.time()))
 
-    # --- линия поддержки (channel: line) ---
+    # --- линия «ИИ-помощник» ---
 
     @app.post("/connect/hook")
     async def connect_hook(request: Request, authorization: str | None = Header(default=None)) -> dict:
@@ -206,7 +171,7 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
         user_id, message_id = event.get("user_id"), event.get("message_id")
         if not user_id or event.get("author_id") != user_id or not message_id:
             return   # сообщения специалистов и самого бота
-        user = resolve_user(settings.users_path, user_id, use_deny=False)
+        user = resolve_user(settings.users_path, user_id)
         if user is None:
             # Чужим бот молча не отвечает — даже «доступ запрещён» не пишет.
             store.log(channel="connect", user_key=user_id, user_name=None, base_id=None,
@@ -275,7 +240,8 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
         user = User(key=f"api-{client.name}-{body.session}"[:120], name=f"API {client.name}",
                     bases="*" if client.bases == "*" else tuple(client.bases))
         done: Future[Reply] = Future()
-        worker.submit(Task(job=Job(channel="api", user=user, text=body.question), deliver=done.set_result))
+        worker.submit(Task(job=Job(channel="api", user=user, text=body.question, base_id=body.base or None),
+                           deliver=done.set_result))
         reply = done.result(timeout=settings.claude.timeout_seconds + 120)
         return {
             "status": reply.status,

@@ -99,7 +99,7 @@ def test_commands_send_instruction_and_extension(env):
 
 
 class FakeConnect:
-    def send_colleague_message(self, **kw):
+    def send_message(self, **kw):
         pass
 
 
@@ -109,7 +109,7 @@ def test_panel_help_and_kit(env, tmp_path):
     settings_file = tmp_path / "settings.yaml"
     shutil.copy(REPO / "config" / "settings.example.yaml", settings_file)
     settings.source = settings_file
-    app = create_app(settings, connect=FakeConnect(), colleague_source=lambda on, stop: None)
+    app = create_app(settings, connect=FakeConnect())
     client = TestClient(app, base_url=f"http://127.0.0.1:{settings.port}", client=("127.0.0.1", 50000))
     with client:
         token = re.search(r'name="panel-token" content="([^"]+)"', client.get("/panel").text).group(1)

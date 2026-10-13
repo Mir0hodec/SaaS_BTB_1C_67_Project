@@ -8,16 +8,19 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from bridge.access import load_bases, pick_base
+from bridge.access import load_bases
+from bridge import onec_extension
 from bridge.answer import clean_answer, split_message
 from bridge.app import create_app
 from bridge.assistant import Assistant
 from bridge.claude_runner import forbidden_tools, parse_limit
 from bridge.config import Settings
 from bridge.store import Store
+from common.yaml_edit import set_value
 
 windows_only = pytest.mark.skipif(platform.system() != "Windows", reason="заглушка CLI — .cmd-шим Windows")
 LINE, BOT, USER = "line-1", "bot-spec", "00000000-0000-0000-0000-000000000001"
+DEMO_LINK = "http://demo.local/Demo"
 
 
 @pytest.fixture
@@ -31,6 +34,7 @@ def settings(repo_root, tmp_path, monkeypatch):
         f'  "{USER}": {{name: "Иванов И.", bases: "*", owner: true}}\n',
         encoding="utf-8")
     shutil.copy(repo_root / "config" / "bases.example.yaml", cfg / "bases.yaml")
+    set_value(cfg / "bases.yaml", ("demo_base", "url"), DEMO_LINK)    # демо-базу тоже выбирают ссылкой
     s = Settings.load(repo_root / "config" / "settings.example.yaml")
     s.users_path, s.bases_path, s.data_dir = cfg / "users.yaml", cfg / "bases.yaml", tmp_path / "data"
     kb = tmp_path / "kb"
@@ -77,13 +81,28 @@ def _drain(client):
 
 # --- выбор базы, чистка ответа, лимиты, защита ---
 
-def test_hashtag_with_typo_picks_base(repo_root):
-    bases = load_bases(repo_root / "config" / "bases.example.yaml")
-    assert pick_base("#рознца остатки", bases).base.id == "demo_base"
-    assert pick_base("остатки #ДЕМО по кассе", bases).text == "остатки по кассе"
-    unknown = pick_base("#склад123 вопрос", bases)
-    assert unknown.base is None and unknown.tag == "склад123"
-    assert pick_base("без хэштега", bases).tag is None
+def test_links_in_message():
+    assert onec_extension.find_links("глянь http://srv/База/ru_RU/, остатки") == \
+        [("http://srv/База/ru_RU/", "глянь остатки")]
+    assert onec_extension.same_link("http://srv/База", "http://SRV/база/ru_RU/#e1cib/list/Документ.X")
+    assert onec_extension.same_link("http://10.0.0.5:6003/mcp", "http://10.0.0.5:6003/mcp/")
+    assert not onec_extension.same_link("http://srv/База", "http://srv/Другая")
+    assert onec_extension.is_toolkit_url("http://10.0.0.5:6003/mcp")
+    assert not onec_extension.is_toolkit_url("http://srv/mcp")
+    assert onec_extension.find_publication("http://10.0.0.5:6003/mcp остатки") is None
+
+
+def test_base_is_chosen_by_link_not_hashtag(settings):
+    from bridge.assistant import Job
+    a = Assistant(settings, Store(settings.data_dir / "b.sqlite3"))
+    user = a.users()[USER]
+    picked = a.handle(Job("connect", user, f"{DEMO_LINK}/"))
+    assert picked.status == "command" and "Демо-база" in picked.text and "#" not in picked.text
+    listed = a.handle(Job("connect", user, "/базы")).text
+    assert DEMO_LINK in listed and "#" not in listed
+    unknown = a.handle(Job("connect", user, "http://10.0.0.9:6003/mcp остатки"))
+    assert unknown.status == "toolkit" and "нет в списке" in unknown.text
+    assert "#" not in a.handle(Job("connect", user, "/помощь")).text
 
 
 def test_cyrillic_base_id_rejected(tmp_path):
@@ -121,7 +140,7 @@ def test_forbidden_tools_detects_terminal_and_foreign_mcp():
 def test_session_follows_base_and_idle(tmp_path):
     st = Store(tmp_path / "s.sqlite3")
     a = st.session("u", "demo_base", 60, keep_base=False)
-    b = st.session("u", None, 60, keep_base=True)          # без хэштега — та же база, тот же разговор
+    b = st.session("u", None, 60, keep_base=True)          # без ссылки — та же база, тот же разговор
     c = st.session("u", "other", 60, keep_base=False)      # другая база — новый разговор
     assert a.is_new and not b.is_new and b.base_id == "demo_base" and c.is_new
     st._exec("UPDATE sessions SET last_active='2000-01-01T00:00:00+00:00'")
@@ -133,7 +152,7 @@ def test_session_after_error_keeps_base(tmp_path):
     st = Store(tmp_path / "s.sqlite3")
     a = st.session("u", "test_base", 60, keep_base=False)
     st.restart_session("u")                                # сбой: разговор Claude — заново
-    b = st.session("u", None, 60, keep_base=True)          # «исправь» без хэштега
+    b = st.session("u", None, 60, keep_base=True)          # «исправь» без ссылки
     c = st.session("u", None, 60, keep_base=True)
     assert b.is_new and b.base_id == "test_base" and b.session_id != a.session_id
     assert not c.is_new and c.session_id == b.session_id
@@ -148,8 +167,8 @@ def test_connect_webhook_end_to_end(settings):
     with TestClient(app) as client:
         hdr = {"Authorization": "Bearer hook-secret"}
         assert client.post("/connect/hook", json=_event("x", msg_id="0"), headers={}).status_code == 401
-        client.post("/connect/hook", json=_event("#демо остатки по кассе", msg_id="1"), headers=hdr)
-        client.post("/connect/hook", json=_event("#демо остатки по кассе", msg_id="1"), headers=hdr)   # дубль
+        client.post("/connect/hook", json=_event(f"{DEMO_LINK} остатки по кассе", msg_id="1"), headers=hdr)
+        client.post("/connect/hook", json=_event(f"{DEMO_LINK} остатки по кассе", msg_id="1"), headers=hdr)   # дубль
         client.post("/connect/hook", json=_event("эхо бота", msg_id="2", author=BOT), headers=hdr)     # бот сам
         client.post("/connect/hook", json=_event("привет", msg_id="3", user="stranger"), headers=hdr)  # чужой
         client.post("/connect/hook", json=_event("выгрузи [mock:file]", msg_id="4"), headers=hdr)
@@ -160,7 +179,7 @@ def test_connect_webhook_end_to_end(settings):
     assert len(answers) == 2                                # дубль, эхо бота и чужой — без ответа
     assert all(u == USER for u, _ in fake.messages)
     assert "Демо-база" in answers[0] and "onec" in answers[0]
-    assert "Демо-база" in answers[1]                        # без хэштега — та же база
+    assert "Демо-база" in answers[1]                        # без ссылки — та же база
     assert fake.files == [(USER, "отчет.txt")]
     assert "[путь скрыт]" in answers[0] and "C:\\secret" not in answers[0]
     journal = Store(settings.data_dir / "bridge.sqlite3").journal()
@@ -209,7 +228,7 @@ def test_api_bridge(settings):
     app = create_app(settings, connect=FakeConnect())
     with TestClient(app) as client:
         assert client.post("/api/ask", json={"question": "x"}).status_code == 401
-        r = client.post("/api/ask", json={"question": "#демо сводка [mock:file]"},
+        r = client.post("/api/ask", json={"question": "сводка [mock:file]", "base": "demo_base"},
                         headers={"Authorization": "Bearer api-secret"}).json()
     assert r["status"] == "ok" and "Демо-база" in r["answer"]
     assert r["files"][0]["name"] == "отчет.txt"
@@ -281,10 +300,12 @@ def test_knowledge_base_reindexes_when_folder_changes(settings):
     w.close()
 
 
-def test_deny_list_overrides_allow_all(tmp_path):
-    from bridge.access import resolve_user
-    path = tmp_path / "users.yaml"
-    path.write_text("allow_all: true\ndeny: ['igor-uuid']\n", encoding="utf-8")
-    assert resolve_user(path, "igor-uuid") is None
-    assert resolve_user(path, "olga-uuid").name == "Сотрудник"
-    assert resolve_user(path, "igor-uuid", use_deny=False) is not None     # на своей линии — отвечаем
+def test_old_dm_settings_are_ignored(tmp_path, repo_root):
+    """В settings.yaml на сервере остались ключи личных сообщений — бот запускается и их не использует."""
+    text = (repo_root / "config" / "settings.example.yaml").read_text(encoding="utf-8").replace(
+        "connect:", 'connect:\n  channel: "colleague"\n  receive: "history"\n  history_colleagues: ["a"]\n'
+        "  history_interval_seconds: 75\n  history_hours: 6\n  agent_login_env: X", 1)
+    path = tmp_path / "settings.yaml"
+    path.write_text(text, encoding="utf-8")
+    cs = Settings.load(path).connect
+    assert not hasattr(cs, "history_colleagues") and not hasattr(cs, "channel")

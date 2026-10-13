@@ -107,12 +107,11 @@
     last = o;
     const pill = $("#state-pill");
     let cls = "ok", text = "Работает";
-    const r = o.receiver;
-    const bad = r.receive === "history" && r.targets.some((t) => t.state === "access_denied" || t.state === "error");
+    const line = o.line || {};
     if (o.paused) { cls = "warn"; text = "Остановлен"; }
     else if (o.limit_until) { cls = "warn"; text = "Лимит подписки до " + new Date(o.limit_until).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }); }
-    else if (r.receive === "history" && !r.running) { cls = "bad"; text = "Приём не запущен"; }
-    else if (bad) { cls = "warn"; text = "Работает, есть предупреждения"; }
+    else if (!line.enabled) { cls = "bad"; text = "Линия не настроена"; }
+    else if (!line.hooked) { cls = line.error ? "bad" : "warn"; text = line.error ? "Линия не подключена" : "Линия подключается"; }
     pill.className = "pill " + cls;
     pill.lastElementChild.textContent = text;
     const b = $("#pause-btn");
@@ -135,10 +134,6 @@
   async function refreshHeader() { try { header(await api("overview")); } catch {} }
 
   // --- обзор ---
-  const STATE = {
-    ok: ["ok", "читается"], waiting: ["", "ждёт очереди"], limit: ["warn", "лимит API"],
-    access_denied: ["bad", "нет доступа"], error: ["bad", "ошибка"],
-  };
   const STATUS = {
     ok: ["ok", "Ответил"], error: ["bad", "Ошибка"], send_error: ["bad", "Не доставлено"], limit: ["warn", "Лимит"],
     denied: ["", "Нет доступа к базе"], unknown_user: ["", "Не в списке"],
@@ -169,7 +164,7 @@
       <div class="legend"><span><i style="background:var(--accent-2)"></i>ответил</span><span><i style="background:var(--text);opacity:.6"></i>ошибка</span><span><i style="background:var(--warn)"></i>лимит подписки</span></div>`;
   }
 
-  const CHANNEL = { connect: "в линии «ИИ-помощник»", colleague: "в личных сообщениях", api: "через API", cli: "из консоли" };
+  const CHANNEL = { api: "через API", cli: "из консоли" };
   function journalRows(rows, compact = false) {
     if (!rows.length) return `<div class="empty">${ICON.inbox}Вопросов пока не было</div>`;
     return `<div class="table-wrap"><table><thead><tr><th>Когда</th><th>Сотрудник</th><th>Вопрос</th><th>Статус</th>${compact ? "" : '<th class="right">Время</th><th class="right">Цена</th>'}</tr></thead><tbody>
@@ -201,11 +196,8 @@
   async function overview() {
     const o = await api("overview");
     header(o);
-    const s = o.stats, r = o.receiver;
+    const s = o.stats;
     const t = s.today, w = s.week;
-    const hist = r.receive === "history";
-    const calls = r.calls_last_hour, perHour = r.interval ? Math.round(3600 / r.interval) : 0;
-    const meterCls = r.limit_hits_last_hour ? "bad" : calls > 80 ? "warn" : "";
     const nowCard = o.current
       ? `<div class="now-busy"><div class="spinner"></div><div class="grow"><div><b>${esc(o.current.user_name)}</b> <span class="muted">· ${esc(secs(o.current.seconds))}</span></div><div class="muted ellipsis">«${esc(o.current.text)}»</div></div></div>`
       : `<div class="row">${avatarIdle()}<div><b>${o.paused ? "Бот остановлен" : "Свободен"}</b><div class="muted">${o.paused ? "Новые вопросы получат ответ «временно выключен»" : "Ждёт новых сообщений"}</div></div></div>`;
@@ -224,19 +216,13 @@
         <div class="card"><h2>Сейчас</h2>${nowCard}
           ${o.queue ? `<div class="hint" style="margin-top:10px">В очереди: ${o.queue}</div>` : ""}
           <dl class="facts" style="margin-top:18px">
-            <dt>Аккаунт Claude</dt><dd>${acc.logged_in ? `${esc(acc.email || acc.name || "вход выполнен")}${acc.plan ? ` <span class="chip accent">${esc(planName(acc.plan))}</span>` : ""}` : '<span style="color:var(--bad)">вход не выполнен</span>'} <a href="#" id="acc-switch" class="hint">сменить</a></dd>
             <dt>Запущен как</dt><dd>${wu.system ? "системная задача Windows" : `пользователь ${esc(wu.name || "?")} <span class="hint">(окно PowerShell)</span>`}</dd>
-            <dt>Модель</dt><dd>${esc(o.model_name)} · ${esc(effortName(o.effort))}</dd>
             <dt>База знаний</dt><dd>${o.kb.documents ? `${nf.format(o.kb.documents)} ${plural(o.kb.documents, "документ", "документа", "документов")}` : '<span style="color:var(--warn)">не собрана</span>'}</dd>
             <dt>Контрагенты</dt><dd>${o.counterparty ? "проверка включена" : '<span class="muted">не настроена</span>'}</dd>
             <dt>Поиск по коду</dt><dd>${o.onec_code ? "включён" : '<span class="muted">не настроен</span>'}</dd>
           </dl></div>
       </div>
-      <div class="grid g32">
-        <div class="card"><h2>Последние вопросы <a class="hint" href="#journal">весь журнал →</a></h2><div id="recent">${journalRows(o.recent, true)}</div></div>
-        <div class="card"><h2>Личные сообщения ${hist ? `<span class="hint">${r.next_poll_in != null ? "следующая проверка через " + secs(r.next_poll_in) : ""}</span>` : ""}</h2>
-          ${hist ? receiverCard(r, calls, perHour, meterCls) : `<div class="muted">Режим: ${esc(r.channel)} / ${esc(r.receive)}</div>`}</div>
-      </div>`;
+      <div class="card"><h2>Последние вопросы <a class="hint" href="#journal">весь журнал →</a></h2><div id="recent">${journalRows(o.recent, true)}</div></div>`;
     bindRows($("#recent"));
     $("#acc-switch").onclick = (e) => { e.preventDefault(); accountHelp(acc); };
   }
@@ -246,13 +232,13 @@
   }
   function heroCard(o) {
     const t = o.stats.today, line = o.line || {};
-    const where = [line.enabled ? "в линии «ИИ-помощник»" : "", o.receiver.receive === "history" ? "в личных сообщениях «Александра»" : ""]
-      .filter(Boolean).join(" и ");
     let state;
     if (o.paused) state = "Помощник <b>на паузе</b> — сотрудники получают «временно выключен». Включить — кнопкой справа вверху.";
     else if (o.limit_until) state = `Лимит подписки Claude исчерпан, обновится <b>в ${new Date(o.limit_until).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}</b>. До этого бот вежливо отказывает.`;
     else if (o.current) state = `Сейчас отвечает: <b>${esc(o.current.user_name)}</b> — «${esc(o.current.text.slice(0, 90))}»`;
-    else state = `Помощник на связи и ждёт вопросов ${esc(where)}.`;
+    else if (!line.enabled) state = "Линия «ИИ-помощник» не настроена — сотрудникам пока некуда писать. Как настроить — в справке для администратора.";
+    else if (!line.hooked) state = "Помощник подключается к линии «ИИ-помощник» — обычно это занимает до пяти минут.";
+    else state = "Помощник на связи и ждёт вопросов в линии «ИИ-помощник».";
     const today = t.questions
       ? ` Сегодня — <b>${nf.format(t.questions)} ${plural(t.questions, "вопрос", "вопроса", "вопросов")}</b>, ${t.ok_rate}% без ошибок.`
       : " Сегодня вопросов ещё не было.";
@@ -260,36 +246,32 @@
       <div class="grow"><h2 class="hero-title">${greeting()}</h2><div class="hero-sub">${state}${today}</div></div></div>`;
   }
   function channelCards(o) {
-    const line = o.line || {}, r = o.receiver, ch = o.channels_today || {}, b = o.bases || {};
-    const lineChip = !line.enabled ? '<span class="chip">не настроена</span>'
+    const line = o.line || {}, ch = o.channels_today || {}, b = o.bases || {}, acc = o.account || {};
+    const lineChip = !line.enabled ? '<span class="chip bad">не настроена</span>'
       : line.hooked ? '<span class="chip ok">подключена</span>'
       : line.error ? '<span class="chip bad">ошибка</span>' : '<span class="chip warn">подключается</span>';
-    const lineText = !line.enabled ? "Своей линии нет — сотрудники пишут только в личные сообщения."
-      : line.hooked ? "1С-Коннект присылает сообщения сразу — ответ начинается без ожидания."
+    const lineText = !line.enabled ? "Линия ещё не создана — как это сделать, написано в справке для администратора."
+      : line.hooked ? "Сотрудники пишут в линию — 1С-Коннект сразу передаёт сообщение боту, и он начинает отвечать."
       : esc(line.error || "Бот поднимает туннель и подписывается на линию.");
-    const people = (r.targets || []).length;
-    const dmChip = !r.credentials ? '<span class="chip bad">нет доступа к API</span>'
-      : !r.running ? '<span class="chip bad">не запущен</span>'
-      : (r.targets || []).some((x) => x.state === "access_denied" || x.state === "error") ? '<span class="chip warn">есть предупреждения</span>'
-      : '<span class="chip ok">работает</span>';
-    const wait = people && r.interval ? Math.ceil((r.interval * people) / 60) : 0;
-    const dmText = people ? `Бот проверяет переписку ${people} ${plural(people, "сотрудника", "сотрудников", "сотрудников")} по очереди — ответ в течение ~${wait} мин.`
-      : "Пока никого не слушает — добавьте сотрудников.";
+    const claudeChip = !acc.logged_in ? '<span class="chip bad">нет входа</span>'
+      : o.limit_until ? '<span class="chip warn">лимит</span>' : '<span class="chip ok">на связи</span>';
+    const claudeText = acc.logged_in
+      ? `${esc(o.model_name)}, ${esc(effortName(o.effort))}. Аккаунт ${esc(acc.email || acc.name || "")}${acc.plan ? " · " + esc(planName(acc.plan)) : ""}.`
+      : "Вход в Claude не выполнен — бот не сможет отвечать.";
     const baseText = b.total ? `${b.toolkit ? `${b.toolkit} ${plural(b.toolkit, "копия", "копии", "копий")} на ПК сотрудников` : ""}${b.toolkit && b.extension ? " · " : ""}${b.extension ? `${b.extension} ${plural(b.extension, "опубликованная", "опубликованные", "опубликованных")}` : ""}` || "демо-база"
       : "Баз пока нет.";
     const icon = {
       line: '<svg viewBox="0 0 24 24"><path d="M4 6.5C4 5.1 5.1 4 6.5 4h11C18.9 4 20 5.1 20 6.5v7c0 1.4-1.1 2.5-2.5 2.5H10l-4.5 4v-4h0C4.7 16 4 15.3 4 14.5z"/><path d="M9 9.5h6M9 12.5h3.5"/></svg>',
-      dm: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c1-3.9 3.7-6 7-6s6 2.1 7 6"/></svg>',
       db: '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>',
     };
     const card = (ic, title, chip, text, foot) => `<div class="card channel"><div class="channel-head"><div class="channel-icon">${ic}</div>
       <div class="grow"><div class="channel-title">${title}</div><div class="channel-state">${chip}</div></div></div>
       <div class="channel-text">${text}</div><div class="channel-foot">${foot}</div></div>`;
-    const today = (n) => `<span class="muted">сегодня</span> <b class="num">${nf.format(n || 0)}</b>`;
-    return card(icon.line, "Линия «ИИ-помощник»", lineChip, lineText, today(ch.connect))
-      + card(icon.dm, "Личные сообщения", dmChip, dmText, `${today(ch.colleague)} <a href="#people">сотрудники →</a>`)
+    return card(icon.line, "Линия «ИИ-помощник»", lineChip, lineText,
+        `<span class="muted">сегодня</span> <b class="num">${nf.format(ch.connect || 0)}</b>`)
+      + card(SPARK, "Claude", claudeChip, claudeText, '<a href="#" id="acc-switch">сменить аккаунт →</a>')
       + card(icon.db, "Базы 1С", b.total ? `<span class="chip accent">${b.total}</span>` : '<span class="chip">нет</span>',
-        esc(baseText), '<span class="muted">по хэштегу или ссылке</span> <a href="#bases">базы →</a>');
+        esc(baseText), '<span class="muted">выбирают ссылкой на базу</span> <a href="#bases">базы →</a>');
   }
   const planName = (p) => ({ pro: "Pro", max: "Max", team: "Team", enterprise: "Enterprise" }[p] || p);
   function accountHelp(acc) {
@@ -312,76 +294,6 @@
   const kpi = (label, value, sub, icon) => `<div class="card kpi"><div class="glyph">${icon}</div><div class="label">${esc(label)}</div><div class="value num">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`;
   const effortName = (e) => ({ low: "быстро", medium: "средняя глубина", high: "глубокие рассуждения", max: "максимальная глубина" }[e] || e);
 
-  function receiverCard(r, calls, perHour, meterCls) {
-    if (!r.credentials) return `<div class="check-res bad">Не заданы логин и пароль API 1С-Коннекта — бот не может читать сообщения.</div>`;
-    const people = r.targets.length ? r.targets.map((t) => `<div class="item row">${avatar(t.name, t.colleague_id)}<div class="grow"><div class="ellipsis"><b>${esc(t.name)}</b></div>
-        <div class="hint ellipsis">${t.last_poll_at ? "проверено " + esc(ago(t.last_poll_at)) : "ещё не проверялся"}${t.state === "access_denied" ? " · нужно открыть доступ к переписке в 1С-Коннекте" : t.error && t.state !== "ok" ? " · " + esc(t.error.slice(0, 80)) : ""}</div></div>
-        ${chip(STATE, t.state)}</div>`).join("")
-      : `<div class="empty">${ICON.users}Бот ещё никого не слушает.<br><a href="#people">Добавить сотрудников →</a></div>`;
-    return `<div class="list">${people}</div>
-      <div style="margin-top:16px"><div class="row" style="justify-content:space-between;margin-bottom:6px"><span class="hint">Запросов истории за час: <b class="num">${calls}</b> из 100 на учётку API</span><span class="hint">~${perHour}/ч у этого бота</span></div>
-      <div class="meter ${meterCls}"><div style="width:${Math.min(100, calls)}%"></div></div>
-      ${r.limit_hits_last_hour ? `<div class="hint" style="color:var(--bad);margin-top:6px">1С-Коннект ${r.limit_hits_last_hour} ${plural(r.limit_hits_last_hour, "раз", "раза", "раз")} ответил «лимит исчерпан» за последний час</div>` : ""}</div>`;
-  }
-
-  // --- сотрудники ---
-  async function people() {
-    const data = await api("colleagues");
-    const n = data.colleagues.length;
-    const minutes = n ? Math.ceil((data.interval * n) / 60) : 0;
-    page.innerHTML = `
-      <div class="grid g2">
-        <div class="card"><h2>Кому отвечает бот <span class="hint">${n ? `ответ придёт в течение ~${minutes} мин` : ""}</span></h2>
-          <div class="list" id="chosen">${n ? data.colleagues.map(personRow).join("") : `<div class="empty">${ICON.users}Пока никого нет — найдите сотрудника справа и нажмите «Добавить»</div>`}</div>
-          <div class="hint" style="margin-top:14px">Бот читает переписку с каждым по очереди раз в ${data.interval} с. Чем больше людей, тем дольше ждать ответа: 1С-Коннект даёт 100 запросов истории в час на всех. Сообщения, отправленные до добавления, бот пропустит.</div>
-        </div>
-        <div class="card"><h2>Добавить сотрудника <button class="btn sm ghost" id="dir-refresh" style="margin-left:auto">${ICON.refresh}Обновить список</button></h2>
-          <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg><input type="search" id="dir-q" placeholder="Фамилия, имя, должность или почта" autocomplete="off"></div>
-          <div class="list" id="dir" style="margin-top:12px"><div class="empty">Загрузка справочника…</div></div>
-          <div class="hint" id="dir-info" style="margin-top:10px"></div>
-        </div>
-      </div>`;
-    page.querySelectorAll("[data-remove]").forEach((b) => b.onclick = () => removePerson(b.dataset.remove, b.dataset.name));
-    let timer;
-    $("#dir-q").oninput = () => { clearTimeout(timer); timer = setTimeout(() => loadDir(), 200); };
-    $("#dir-refresh").onclick = () => loadDir(true);
-    loadDir();
-  }
-  function personRow(p) {
-    const st = p.status;
-    return `<div class="item row">${avatar(p.name, p.id)}<div class="grow"><div class="ellipsis"><b>${esc(p.name)}</b></div>
-      <div class="hint ellipsis">${esc(p.post || p.email || (p.known ? "" : "нет в справочнике 1С-Коннекта"))}${st && st.last_message_at ? " · писал(а) " + esc(when(st.last_message_at)) : ""}</div></div>
-      ${p.denied ? '<span class="chip bad">в списке запрета</span>' : st ? chip(STATE, st.state) : ""}
-      <button class="icon-btn" title="Убрать" data-remove="${esc(p.id)}" data-name="${esc(p.name)}">${ICON.x}</button></div>`;
-  }
-  async function loadDir(refresh = false) {
-    const q = $("#dir-q").value;
-    const list = $("#dir");
-    if (refresh) list.innerHTML = `<div class="empty">Загружаю из 1С-Коннекта…</div>`;
-    try {
-      const d = await api(`directory?q=${encodeURIComponent(q)}&refresh=${refresh ? 1 : 0}`);
-      list.innerHTML = d.people.length ? d.people.map((p) => `<div class="item row">${avatar(p.name, p.id)}<div class="grow"><div class="ellipsis"><b>${esc(p.name)}</b></div><div class="hint ellipsis">${esc([p.post, p.email].filter(Boolean).join(" · "))}</div></div>
-        ${p.added ? '<span class="chip ok">уже слушает</span>' : `<button class="btn sm primary" data-add="${esc(p.id)}" data-name="${esc(p.name)}">${ICON.plus}Добавить</button>`}</div>`).join("")
-        : `<div class="empty">${ICON.search}${d.loaded_at ? "Никого не нашлось" : "Справочник не загрузился — проверьте логин API на вкладке «Проверки»"}</div>`;
-      $("#dir-info").textContent = d.loaded_at ? `Найдено: ${d.total}${d.total > d.people.length ? ", показаны первые " + d.people.length : ""}. Справочник обновлён ${ago(d.loaded_at)}.` : "";
-      list.querySelectorAll("[data-add]").forEach((b) => b.onclick = () => addPerson(b.dataset.add, b.dataset.name, b));
-      if (refresh) toast("Справочник обновлён");
-    } catch (e) { list.innerHTML = `<div class="check-res bad">${esc(e.message)}</div>`; }
-  }
-  async function addPerson(id, name, btn) {
-    btn.disabled = true;
-    try {
-      const r = await api("colleagues", { method: "POST", body: { id } });
-      toast(`${name}: бот начнёт читать переписку при следующей проверке` + (r.notes.length ? " (" + r.notes.join("; ") + ")" : ""));
-      people();
-    } catch (e) { toast(e.message, true); btn.disabled = false; }
-  }
-  async function removePerson(id, name) {
-    if (!(await confirmBox("Убрать сотрудника?", `Бот перестанет читать переписку с «${name}» и отвечать ему.`, "Убрать", true))) return;
-    try { await api("colleagues/" + id, { method: "DELETE" }); toast(`${name} убран(а)`); people(); }
-    catch (e) { toast(e.message, true); }
-  }
-
   // --- базы 1С ---
   const DB_ICON = '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>';
   async function basesPage() {
@@ -389,7 +301,7 @@
     const list = d.bases;
     page.innerHTML = `
       <div class="card"><h2>Базы 1С сотрудников <button class="btn sm primary" id="base-add" style="margin-left:auto">${ICON.plus}Добавить базу</button></h2>
-        <div class="hint" style="margin-bottom:12px">Два вида баз: <b>копия на ПК сотрудника</b> с обработкой MCP Toolkit — бот читает и может исправлять данные; <b>опубликованная база</b> с расширением MCP_HTTPService — только чтение. Бот всегда входит под «${esc(d.admin_user)}» с паролем 1. Базу выбирают хэштегом: «#хэштег почему не проводится документ…».</div>
+        <div class="hint" style="margin-bottom:12px">Два вида баз: <b>копия на ПК сотрудника</b> с обработкой MCP Toolkit — бот читает и может исправлять данные; <b>опубликованная база</b> с расширением MCP_HTTPService — только чтение. Бот всегда входит под «${esc(d.admin_user)}» с паролем 1. Базу сотрудник выбирает ссылкой: присылает боту её адрес, можно сразу с вопросом. Новую опубликованную базу бот вносит в список сам, когда получает ссылку на неё.</div>
         <div class="list">${list.length ? list.map(baseRow).join("") : `<div class="empty">${DB_ICON}Баз пока нет — нажмите «Добавить базу»</div>`}</div>
       </div>
       <div class="card"><h2>Комплект для сотрудника <span class="hint">бот присылает его по команде /toolkit</span></h2>
@@ -411,13 +323,13 @@
       : b.kind === "toolkit" && !b.token_set ? '<span class="chip warn">нет токена</span>'
       : !c ? '<span class="chip">не проверялась</span>'
       : c.ok ? '<span class="chip ok">работает</span>' : '<span class="chip bad">ошибка</span>';
-    const extra = [b.toolkit_url || b.url || b.id];
+    const extra = [b.link || b.id];
     if (b.kind === "toolkit") extra.push(b.write ? "запись разрешена" : "только чтение");
     if (b.kind === "extension") extra.push("опубликованная база, только чтение");
     if (b.owners.length) extra.push(b.owners.map((o) => o.name).join(", "));
     return `<div class="item"><div class="row">
         <div class="avatar" style="background:var(--accent-soft);color:var(--accent)">${DB_ICON}</div>
-        <div class="grow"><div class="ellipsis"><b>${esc(b.title)}</b> <span class="muted">${b.tags.map((t) => "#" + esc(t)).join(" ")}</span></div>
+        <div class="grow"><div class="ellipsis"><b>${esc(b.title)}</b></div>
           <div class="hint ellipsis">${esc(extra.join(" · "))}</div></div>
         ${state}
         ${live ? `<button class="btn sm" data-bcheck="${esc(b.id)}">Проверить</button>` : ""}
@@ -456,19 +368,18 @@
     drawer(`<h3>${isNew ? "Новая база" : "База «" + esc(b.title) + "»"}</h3>
       <div class="field" style="margin-top:16px"><label for="bf-title">Название</label><input type="text" id="bf-title" value="${esc(b.title || "")}" placeholder="ГКЭ у Ивана Бубнова"></div>
       <div class="field"><label for="bf-id">Код базы</label><input type="text" id="bf-id" value="${esc(b.id || "")}" ${isNew ? "" : "disabled"} placeholder="gke_ivan — латиница, цифры, _"></div>
-      <div class="field"><label for="bf-tags">Хэштеги</label><input type="text" id="bf-tags" value="${esc((b.tags || []).join(", "))}" placeholder="гке, гкеиван"><div class="hint">По ним сотрудник выбирает базу в вопросе: «#гке …»</div></div>
       ${isNew ? `<div class="field"><label>Как подключена база</label><div class="seg" id="bf-kind"><button data-k="toolkit" class="on">Копия на ПК сотрудника (MCP Toolkit)</button><button data-k="extension">Опубликованная база (расширение)</button></div></div>` : ""}
       <div id="bf-ext" hidden>
         <div class="field"><label for="bf-pub">Адрес публикации базы</label><input type="text" id="bf-pub" value="${esc(b.url || "")}" placeholder="http://сервер/ИмяБазы"><div class="hint">В базе установлено расширение MCP_HTTPService, на веб-сервере опубликованы HTTP-сервисы расширений. Бот входит под «Администратор» с паролем 1 и только читает: метаданные, данные, журнал регистрации, формы.</div></div>
       </div>
       <div id="bf-tk">
-      <div class="field"><label for="bf-url">Адрес MCP Toolkit</label><input type="text" id="bf-url" value="${esc(b.toolkit_url || "")}" placeholder="http://192.168.0.51:6003/mcp"><div class="hint">IP компьютера сотрудника и порт из формы MCP Toolkit</div></div>
+      <div class="field"><label for="bf-url">Адрес MCP Toolkit</label><input type="text" id="bf-url" value="${esc(b.toolkit_url || "")}" placeholder="http://192.168.0.51:6003/mcp"><div class="hint">IP компьютера сотрудника и порт из формы MCP Toolkit. Этот же адрес сотрудник присылает боту, чтобы работать с базой.</div></div>
       <div class="field"><label for="bf-token">Токен MCP Toolkit</label><input type="password" id="bf-token" autocomplete="new-password" placeholder="${esc(tokenHint)}"></div>
       <div class="field"><label class="row" style="gap:8px"><input type="checkbox" id="bf-write" ${b.write ? "checked" : ""}> Разрешить боту изменять данные в базе</label><div class="hint">Без подтверждения. Сотрудник ставит в MCP Toolkit галочку «Записать» (блок «Автоматически разрешать операции»). Удаление объектов MCP Toolkit блокирует всегда.</div></div>
       </div>
       <div class="field"><label>Кто может работать с базой</label><div id="bf-owners"></div>
         <div class="search" style="margin-top:6px"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg><input type="search" id="bf-q" placeholder="Добавить сотрудника — фамилия"></div>
-        <div class="list" id="bf-found"></div><div class="hint">Пусто — все, кому отвечает бот.</div></div>
+        <div class="list" id="bf-found"></div><div class="hint">Пусто — все сотрудники.</div></div>
       <div class="savebar"><button class="btn ghost" data-close>Отмена</button><button class="btn primary" id="bf-save">Сохранить</button></div>`);
     const drawOwners = () => {
       $("#bf-owners").innerHTML = owners.length
@@ -499,7 +410,7 @@
       }, 250);
     };
     $("#bf-save").onclick = async () => {
-      const body = { id: $("#bf-id").value.trim(), title: $("#bf-title").value.trim(), tags: $("#bf-tags").value,
+      const body = { id: $("#bf-id").value.trim(), title: $("#bf-title").value.trim(),
         kind, url: $("#bf-pub").value.trim(),
         toolkit_url: $("#bf-url").value.trim(), token: $("#bf-token").value, write: $("#bf-write").checked,
         owners: owners.map((o) => o.id) };
@@ -590,11 +501,9 @@
   const EFFORT = { low: ["Низкая", "быстрые ответы"], medium: ["Средняя", "баланс"], high: ["Высокая", "думает тщательнее"], max: ["Максимальная", "медленнее и дороже"] };
   async function settingsPage() {
     const s = await api("settings");
-    const form = { model: s.model, effort: s.effort, interval: s.interval, ack_text: s.ack_text };
+    const form = { model: s.model, effort: s.effort, ack_text: s.ack_text };
     const v = s.version || {};
     const draw = () => {
-      const perHour = Math.round(3600 / form.interval);
-      const wait = s.colleagues ? Math.ceil((form.interval * s.colleagues) / 60) : 0;
       page.innerHTML = `
         <div class="card"><h2>Модель Claude</h2>
           <div class="choice">${s.models.map((m) => `<button class="opt ${form.model === m.id ? "on" : ""}" data-model="${m.id}"><b>${esc(m.name)}</b><span>${esc(MODEL_HINT[m.id] || "")}</span></button>`).join("")}</div>
@@ -602,12 +511,9 @@
           <div class="choice four">${s.efforts.map((e) => `<button class="opt ${form.effort === e ? "on" : ""}" data-effort="${e}"><b>${EFFORT[e][0]}</b><span>${EFFORT[e][1]}</span></button>`).join("")}</div></div>
         </div>
         <div class="card"><h2>Сообщения</h2>
-          <div class="field"><label for="interval">Как часто проверять переписку</label>
-            <div class="range"><input type="range" id="interval-r" min="30" max="300" step="5" value="${Math.min(300, form.interval)}"><input type="number" id="interval" min="20" max="3600" value="${form.interval}"><span class="muted">сек</span></div>
-            <div class="hint">≈ ${perHour} запросов истории в час у этого бота${s.colleagues ? ` · при ${s.colleagues} ${plural(s.colleagues, "сотруднике", "сотрудниках", "сотрудниках")} ответ придёт в течение ~${wait} мин` : ""}. Лимит 1С-Коннекта — 100 в час на учётку API, его делят все, кто ею пользуется.</div></div>
           <div class="field"><label for="ack">Сообщение «принял вопрос»</label>
             <input type="text" id="ack" value="${esc(form.ack_text)}" maxlength="300" placeholder="Пусто — не отправлять">
-            <div class="hint">Бот сразу отправляет его сотруднику, пока готовит ответ.</div></div>
+            <div class="hint">Бот сразу отправляет его в линию, пока готовит ответ. Не оставляйте пустым: если линия не получит ответа за 30 секунд, 1С-Коннект передаст обращение живому специалисту.</div></div>
           <div class="savebar"><span class="hint" id="dirty"></span><button class="btn primary" id="save">Сохранить</button></div>
         </div>
         <div class="card"><h2>Обслуживание</h2>
@@ -620,9 +526,6 @@
         </div>`;
       page.querySelectorAll("[data-model]").forEach((b) => b.onclick = () => { form.model = b.dataset.model; draw(); });
       page.querySelectorAll("[data-effort]").forEach((b) => b.onclick = () => { form.effort = b.dataset.effort; draw(); });
-      $("#interval-r").oninput = (e) => { form.interval = +e.target.value; $("#interval").value = form.interval; markDirty(); };
-      $("#interval-r").onchange = () => draw();
-      $("#interval").onchange = (e) => { form.interval = Math.max(20, Math.min(3600, +e.target.value || 75)); draw(); };
       $("#ack").oninput = (e) => { form.ack_text = e.target.value; markDirty(); };
       $("#save").onclick = save;
       $("#update").onclick = update;
@@ -630,7 +533,7 @@
       markDirty();
     };
     const markDirty = () => {
-      const dirty = form.model !== s.model || form.effort !== s.effort || +form.interval !== +s.interval || form.ack_text !== s.ack_text;
+      const dirty = form.model !== s.model || form.effort !== s.effort || form.ack_text !== s.ack_text;
       $("#dirty").textContent = dirty ? "Есть несохранённые изменения" : "";
       $("#save").disabled = !dirty;
     };
@@ -717,7 +620,7 @@
     page.innerHTML = `<div class="card">
       <div class="toolbar no-print">
         <div class="seg" id="h-doc">${list.map((x) => `<button data-d="${esc(x.id)}" class="${x.id === hstate.doc ? "on" : ""}">${esc({ employees: "Сотрудникам", admin: "Администратору" }[x.id] || x.title)}</button>`).join("")}</div>
-        <span class="hint grow">${hstate.doc === "employees" ? "Этот же файл бот присылает сотруднику по команде /инструкция и вместе с /toolkit." : "Как вести помощника: сотрудники, базы, аккаунт Claude, неполадки."}</span>
+        <span class="hint grow">${hstate.doc === "employees" ? "Этот же файл бот присылает сотруднику по команде /инструкция и вместе с /toolkit." : "Как вести помощника: линия, базы, аккаунт Claude, неполадки."}</span>
         <button class="btn sm" id="h-save"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Скачать файл</button>
         <button class="btn sm" id="h-print"><svg viewBox="0 0 24 24"><path d="M7 9V4h10v5M7 17H5V10h14v7h-2M7 14h10v6H7z"/></svg>Печать</button>
       </div>
@@ -736,8 +639,7 @@
   // --- маршрутизация ---
   const PAGES = {
     overview: ["Обзор", "Состояние бота и статистика", overview],
-    people: ["Сотрудники", "Кому бот отвечает в личных сообщениях 1С-Коннекта", people],
-    bases: ["Базы 1С", "Копии клиентских баз на ПК сотрудников, подключённые через MCP Toolkit", basesPage],
+    bases: ["Базы 1С", "С какими базами работает бот — сотрудник выбирает базу ссылкой на неё", basesPage],
     journal: ["Журнал", "Все вопросы сотрудников и ответы бота", () => journal()],
     checks: ["Проверки", "Проверить связь с Claude, 1С-Коннектом, 1С и базой знаний", checks],
     settings: ["Настройки", "Изменения применяются сразу, перезапуск не нужен", settingsPage],

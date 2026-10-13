@@ -76,7 +76,7 @@ class Store:
 
         Новый — после часа простоя или при смене базы: модель видит одну базу
         и не путает её цифры с цифрами прошлой. keep_base=True (в сообщении
-        не было хэштега) — остаёмся в базе текущего разговора.
+        не было ссылки на базу) — остаёмся в базе текущего разговора.
         """
         row = self._exec("SELECT session_id, base_id, last_active, cost_total, started FROM sessions "
                          "WHERE user_key=?", (user_key,))

@@ -19,11 +19,11 @@ from typing import Callable
 
 import requests
 
-from bridge.connect_history import SOAP_URL
 from bridge.store import Store
 
 log = logging.getLogger("bridge.directory")
 
+SOAP_URL = "https://cus.1c-connect.com/cus/ws/PartnerWebAPI2"
 SOAP_ACTION = "http://buhphone.com/PartnerWebAPI2#PartnerWebAPI2:SpecialistRead"
 CACHE_KEY = "directory"
 CACHE_TTL_SECONDS = 24 * 3600

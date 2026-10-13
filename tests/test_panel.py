@@ -18,7 +18,7 @@ PORT = 8010
 
 
 class FakeConnect:
-    def send_colleague_message(self, **kw):
+    def send_message(self, **kw):
         pass
 
 
@@ -28,14 +28,14 @@ def panel(repo_root, tmp_path, monkeypatch):
     cfg.mkdir()
     settings_file = cfg / "settings.yaml"
     shutil.copy(repo_root / "config" / "settings.example.yaml", settings_file)
-    (cfg / "users.yaml").write_text(f'allow_all: true\ndeny: ["{IGOR}"]   # старый бот\n', encoding="utf-8")
+    (cfg / "users.yaml").write_text('allow_all: true\n', encoding="utf-8")
     s = Settings.load(settings_file)
     s.users_path = cfg / "users.yaml"
     s.bases_path = repo_root / "config" / "bases.example.yaml"
     s.data_dir = tmp_path / "data"
     s.knowledge_base.root, s.knowledge_base.index_path = tmp_path / "kb", tmp_path / "kb.sqlite3"
     s.connect.bot_specialist_id = BOT
-    app = create_app(s, connect=FakeConnect(), colleague_source=lambda on, stop: None)
+    app = create_app(s, connect=FakeConnect())
     client = TestClient(app, base_url=f"http://127.0.0.1:{PORT}", client=("127.0.0.1", 50000))
     with client:
         html = client.get("/panel").text
@@ -59,45 +59,36 @@ def test_page_and_guard(panel):
     assert o["model"] == "claude-opus-5-5" and o["stats"]["today"]["questions"] == 0 and len(o["stats"]["series"]) == 14
 
 
-def test_colleagues_add_remove_and_deny(panel):
-    client, auth, s, settings_file = panel
+def test_directory_search_and_no_dm_pages(panel):
+    client, auth, s, _ = panel
     found = client.get("/panel/api/directory?q=бубнов", headers=auth).json()["people"]
     assert {p["name"] for p in found} == {"Бубнов Иван", "Бубнова Юлия", "Бубнов Игорь"}
-    assert client.post("/panel/api/colleagues", json={"id": YULIA}, headers=auth).status_code == 200
-    r = client.post("/panel/api/colleagues", json={"id": IGOR}, headers=auth).json()
-    assert r["notes"] and s.connect.history_colleagues == [YULIA, IGOR]
-    assert yaml.safe_load(settings_file.read_text(encoding="utf-8"))["connect"]["history_colleagues"] == [YULIA, IGOR]
-    assert yaml.safe_load(s.users_path.read_text(encoding="utf-8"))["deny"] == []
-    assert client.post("/panel/api/colleagues", json={"id": YULIA}, headers=auth).status_code == 409
-    assert client.post("/panel/api/colleagues", json={"id": BOT}, headers=auth).status_code == 400
-    assert client.post("/panel/api/colleagues", json={"id": "x"}, headers=auth).status_code == 400
-    names = [c["name"] for c in client.get("/panel/api/colleagues", headers=auth).json()["colleagues"]]
-    assert names == ["Бубнова Юлия", "Бубнов Игорь"]
-    assert client.delete(f"/panel/api/colleagues/{IGOR}", headers=auth).status_code == 200
-    assert s.connect.history_colleagues == [YULIA]
+    assert client.get("/panel/api/colleagues", headers=auth).status_code == 404     # личных сообщений больше нет
+    o = client.get("/panel/api/overview", headers=auth).json()
+    assert "receiver" not in o and "line" in o
+    js = client.get("/panel/static/panel.js").text
+    assert "Личные сообщения" not in js and "хэштег" not in js.lower()
 
 
 def test_settings_validation_and_persist(panel):
     client, auth, s, settings_file = panel
     assert client.post("/panel/api/settings", json={"model": "gpt-4"}, headers=auth).status_code == 400
-    assert client.post("/panel/api/settings", json={"interval": 5}, headers=auth).status_code == 400
     r = client.post("/panel/api/settings", json={"model": "claude-sonnet-5-5", "effort": "medium",
-                                                  "interval": 90, "ack_text": "Секунду…"}, headers=auth)
-    assert r.status_code == 200
-    assert (s.claude.model, s.claude.effort, s.connect.history_interval_seconds, s.connect.ack_text) == \
-        ("claude-sonnet-5-5", "medium", 90, "Секунду…")
+                                                  "ack_text": "Секунду…"}, headers=auth)
+    assert r.status_code == 200 and "interval" not in r.json()
+    assert (s.claude.model, s.claude.effort, s.connect.ack_text) == ("claude-sonnet-5-5", "medium", "Секунду…")
     text = settings_file.read_text(encoding="utf-8")
     assert "# всегда полное имя модели" in text
     raw = yaml.safe_load(text)
-    assert raw["claude"]["model"] == "claude-sonnet-5-5" and raw["connect"]["history_interval_seconds"] == 90
+    assert raw["claude"]["model"] == "claude-sonnet-5-5" and raw["connect"]["ack_text"] == "Секунду…"
 
 
 def test_journal_with_answer(panel):
     client, auth, s, _ = panel
     store = client.app.state.store
-    store.log(channel="colleague", user_key=YULIA, user_name="Сотрудник", base_id=None, question="как начислить пени",
+    store.log(channel="connect", user_key=YULIA, user_name="Сотрудник", base_id=None, question="как начислить пени",
               status="ok", answer_chars=5, duration_ms=1700, cost_usd=0.08, answer="Ответ")
-    store.log(channel="colleague", user_key=IVAN, user_name="Сотрудник", base_id=None, question="привет",
+    store.log(channel="connect", user_key=IVAN, user_name="Сотрудник", base_id=None, question="привет",
               status="error", error="сбой")
     rows = client.get("/panel/api/journal", headers=auth).json()["rows"]
     assert [r["user_name"] for r in rows] == ["Бубнов Иван", "Бубнова Юлия"]

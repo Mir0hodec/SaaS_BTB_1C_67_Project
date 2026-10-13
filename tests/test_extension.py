@@ -130,7 +130,7 @@ def test_probe_reports_password_and_publication(fake_1c):
 def _env(tmp_path, url):
     s = Settings.load(REPO / "config" / "settings.example.yaml")
     s.bases_path = tmp_path / "bases.yaml"
-    s.bases_path.write_text(f'ut_pub:\n  title: "УТ опубликованная"\n  tags: ["ут"]\n  mode: extension\n'
+    s.bases_path.write_text(f'ut_pub:\n  title: "УТ опубликованная"\n  mode: extension\n'
                             f'  url: "{url}"\n', encoding="utf-8")
     s.users_path = tmp_path / "users.yaml"
     s.users_path.write_text("allow_all: true\n", encoding="utf-8")
@@ -179,18 +179,18 @@ def test_gate_and_prompt(fake_1c, tmp_path):
     runner = Runner()
     a = Assistant(s, Store(s.data_dir / "s.sqlite3"), runner=runner)
     ask = lambda text: a.handle(Job(channel="connect", user=User(key="u1", name="Иван", bases="*"), text=text))  # noqa: E731
-    reply = ask("#ут почему не проводится поступление")
+    reply = ask(f"{fake_1c} почему не проводится поступление")
     assert reply.status == "ok" and len(runner.calls) == 1
     assert "опубликованная база" in runner.calls[0]["question"] and "Только чтение" in runner.calls[0]["question"]
     assert "mcp__onec__get_event_log" in runner.calls[0]["allowed"]
     Fake1C.published = False
     a.toolkit_checks.clear()
-    reply = ask("#ут остатки")
+    reply = ask(f"{fake_1c}/ остатки")
     assert "HTTP-сервис расширения" in reply.text and len(runner.calls) == 1   # Claude не запускался
 
 
 class FakeConnect:
-    def send_colleague_message(self, **kw):
+    def send_message(self, **kw):
         pass
 
 
@@ -201,7 +201,7 @@ def test_panel_adds_and_checks_published_base(fake_1c, tmp_path, monkeypatch):
     settings_file = tmp_path / "settings.yaml"
     shutil.copy(REPO / "config" / "settings.example.yaml", settings_file)
     s.source = settings_file
-    app = create_app(s, connect=FakeConnect(), colleague_source=lambda on, stop: None)
+    app = create_app(s, connect=FakeConnect())
     client = TestClient(app, base_url=f"http://127.0.0.1:{s.port}", client=("127.0.0.1", 50000))
     with client:
         token = re.search(r'name="panel-token" content="([^"]+)"', client.get("/panel").text).group(1)
@@ -210,7 +210,7 @@ def test_panel_adds_and_checks_published_base(fake_1c, tmp_path, monkeypatch):
                                                                    "url": "ftp://x"})
         assert bad.status_code == 400
         r = client.post("/panel/api/bases", headers=auth, json={
-            "id": "prosmotr1", "title": "Просмотр", "tags": "просмотр", "kind": "extension",
+            "id": "prosmotr1", "title": "Просмотр", "kind": "extension",
             "url": fake_1c + "/hs/mcp-1c/"})
         assert r.status_code == 200, r.text
         row = next(b for b in r.json()["bases"] if b["id"] == "prosmotr1")
@@ -233,13 +233,13 @@ def test_employee_connects_base_by_link(fake_1c, tmp_path):
     ask = lambda text: a.handle(Job(channel="connect", user=User(key="u1", name="Иван", bases="*"), text=text))  # noqa: E731
 
     reply = ask(f"{fake_1c}/ru_RU/#e1cib/list")                 # только ссылка: подключить, Claude не нужен
-    assert reply.status == "command" and "Подключил базу" in reply.text and "#base1" in reply.text
+    assert reply.status == "command" and "Работаю с базой" in reply.text and "#" not in reply.text
     assert not runner.calls
     base = load_bases(s.bases_path)["base1"]
     assert base.via_extension and base.url == fake_1c
     assert "added_by" in s.bases_path.read_text(encoding="utf-8")
 
-    reply = ask("какие документы есть в конфигурации?")         # без хэштега — в подключённой базе
+    reply = ask("какие документы есть в конфигурации?")         # без ссылки — в подключённой базе
     assert reply.status == "ok" and "опубликованная база" in runner.calls[-1]["question"]
 
     reply = ask(f"{fake_1c} покажи ошибки в журнале")           # та же ссылка ещё раз — та же база

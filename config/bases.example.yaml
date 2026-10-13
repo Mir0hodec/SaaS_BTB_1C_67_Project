@@ -1,9 +1,9 @@
-# Базы 1С. Базу в вопросе выбирают хэштегом: «#демо остатки по кассе».
+# Базы 1С. Сотрудник выбирает базу ссылкой на неё (url или toolkit_url) — можно сразу с вопросом.
+# Опубликованную базу с расширением MCP_HTTPService бот вносит сюда сам, получив ссылку на неё.
 # id — только латиница: Claude Code вычищает кириллицу из имён инструментов.
 
 demo_base:
   title: "Демо-база (Розница)"
-  tags: ["демо", "розница", "demo"]
   mode: mock                                   # mock — демо-данные, http — боевая база
   fixtures_dir: mcp_1c/fixtures/sample_base
   code_dump_dir: mcp_1c/fixtures/sample_base/dump   # выгрузка конфигурации в файлы
@@ -11,7 +11,6 @@ demo_base:
 # Боевая база через read-only HTTP-сервис (контракт — в README):
 # acme_ut:
 #   title: "Акме — Управление торговлей"
-#   tags: ["акме", "acme"]
 #   mode: http
 #   url: "http://1c-server/acme_ut"
 #   auth_user: "ai_readonly"                   # отдельная учётка только на чтение
@@ -22,7 +21,6 @@ demo_base:
 # Токен MCP Toolkit сюда НЕ пишется — он хранится в .secrets/toolkit.json (вводится в панели).
 # gke_ivan:
 #   title: "ГКЭ у Ивана Бубнова"
-#   tags: ["гке"]
 #   toolkit_url: "http://192.168.0.51:6003/mcp"
 #   owners: ["6a24f7b0-b9bb-42fa-91f2-250a02329a8a"]   # кто может выбирать базу; пусто — все
 #   write: true                                         # боту можно исправлять данные (execute_code)

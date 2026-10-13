@@ -1,6 +1,6 @@
 """Тестовая база 1С — проверить помощника целиком без сотрудника и его ПК.
 
-    python scripts/test_base.py create            создать базу, внести её в панель как #тест
+    python scripts/test_base.py create            создать базу и внести её в панель («Базы 1С»)
     python scripts/test_base.py open              открыть базу с MCP Toolkit (порт 6013)
     python scripts/test_base.py status            цены и проведение поступлений — что исправил бот
     python scripts/test_base.py remove            убрать из панели и удалить базу
@@ -245,13 +245,14 @@ def create(settings: Settings, path: Path, password: str) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
     try:
-        for key, value in (("title", "Тестовая база помощника"), ("tags", ["тест"]),
+        for key, value in (("title", "Тестовая база помощника"),
                            ("toolkit_url", f"http://127.0.0.1:{PORT}/mcp"), ("owners", []), ("write", True)):
             set_value(settings.bases_path, (BASE_ID, key), value)
     except YamlEditError as exc:
         sys.exit(f"bases.yaml: {exc}")
     toolkit_secrets.set_token(BASE_ID, token)
-    print(f"Готово. База внесена в панель как #тест ({BASE_ID}).\nДальше: python scripts/test_base.py open")
+    print(f"Готово. База внесена в панель ({BASE_ID}), ссылка на неё: http://127.0.0.1:{PORT}/mcp\n"
+          "Дальше: python scripts/test_base.py open")
 
 
 def open_base(settings: Settings, path: Path, password: str, port: int = PORT) -> None:

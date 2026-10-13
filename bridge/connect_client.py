@@ -2,8 +2,6 @@
 https://1c-connect.atlassian.net/wiki/spaces/PUBLIC/pages/1349877768/4.2.+API
 
 Используемые методы:
-  POST /v1/colleague/send/message/  SendMessagecolleague — личное сообщение сотруднику
-  POST /v1/colleague/send/file/     SendFileСollegue — файл в личный чат (multipart: meta + file)
   POST /v1/hook/               SetHook — адрес вебхука (только режим линии)
   POST /v1/line/send/message/  SendMessageLine — текст в чат линии
   POST /v1/line/send/file/     SendFileLine — файл в чат (multipart: meta + file)
@@ -75,25 +73,6 @@ class ConnectClient:
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         with open(path, "rb") as f:
             self._post("/v1/line/send/file/", files={
-                "meta": (None, json.dumps(meta, ensure_ascii=False), "application/json"),
-                "file": (path.name, f, mime),
-            })
-
-    def send_colleague_message(self, *, recipient_id: str, author_id: str, text: str) -> None:
-        """SendMessagecolleague — личное сообщение сотруднику (поле в API: recepient_id)."""
-        self._post("/v1/colleague/send/message/", json={
-            "recepient_id": recipient_id, "author_id": author_id, "text": text,
-        })
-
-    def send_colleague_file(self, *, recipient_id: str, author_id: str, path: Path,
-                            comment: str | None = None) -> None:
-        """SendFileСollegue — файл в личный чат сотруднику."""
-        meta = {"recepient_id": recipient_id, "author_id": author_id, "file_name": path.name}
-        if comment:
-            meta["comment"] = comment
-        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        with open(path, "rb") as f:
-            self._post("/v1/colleague/send/file/", files={
                 "meta": (None, json.dumps(meta, ensure_ascii=False), "application/json"),
                 "file": (path.name, f, mime),
             })

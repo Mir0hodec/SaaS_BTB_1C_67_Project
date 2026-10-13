@@ -1,8 +1,8 @@
 """Обработка одного обращения — общий путь для 1С-Коннект, API-моста и консоли.
 
 Путь вопроса (как на слайде «Путь одного вопроса»):
-  1. белый список проверен до этого (канал);
-  2. по хэштегу находим базу, конфиг MCP — только для неё;
+  1. белый список проверен до этого (линия «ИИ-помощник»);
+  2. по ссылке в сообщении находим базу (или берём базу разговора), конфиг MCP — только для неё;
   3. Claude Code продолжает сессию этого сотрудника;
   4. Claude изучает метаданные, пишет запросы, проверяет и считает;
   5. ответ чистится, файлы собираются, всё уходит в чат.
@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+import sqlite3
 import threading
 import time
 import uuid
@@ -20,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from bridge.access import Base, BaseChoice, User, load_bases, load_users, pick_base
+from bridge.access import Base, User, load_bases, load_users
 from bridge import docs, onec_extension, onec_toolkit, toolkit_secrets
 from bridge.answer import clean_answer
 from bridge.claude_runner import ClaudeRunner, RunResult
@@ -37,14 +38,15 @@ _SAFE_KEY_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
 HELP = (
     "Я ИИ-помощник ГК «Эксперт». Спрашивайте обычным языком.\n"
-    "Вопрос по данным 1С — укажите базу хэштегом: «#демо остатки по кассе на 1 сентября».\n"
-    "Новая база: установите в неё расширение (/расширение) и пришлите мне ссылку на базу — подключу сам.\n"
-    "Дальше можно без хэштега: «а теперь по месяцам в Excel» — я помню разговор.\n"
+    "Вопрос по данным 1С — пришлите ссылку на базу, можно сразу с вопросом: "
+    "«http://сервер/База почему не проводится поступление №15?». Дальше ссылку повторять не нужно — "
+    "я помню разговор и базу.\n"
+    "Новая опубликованная база: установите в неё расширение (/расширение) и пришлите ссылку — подключу сам.\n"
     "Вопросы «как сделать» — ищу в базе знаний компании.\n"
     "Проверка контрагента: «проверь контрагента 750710450345» — долг и неподписанные ЭАВР.\n"
     "Можно прислать скриншот, PDF или файл вместе с вопросом.\n"
-    "Команды: /базы — список баз, /новый — начать разговор заново, /инструкция — подробная инструкция файлом, "
-    "/toolkit — подключить к помощнику свою копию базы."
+    "Команды: /базы — ваши базы и ссылки на них, /новый — начать разговор заново, "
+    "/инструкция — подробная инструкция файлом, /toolkit — подключить к помощнику свою копию базы."
 )
 
 
@@ -57,8 +59,8 @@ TOOLKIT_HELP = (
     "«Токен доступа». Если помощник должен исправлять данные — внизу окна, в блоке «Автоматически разрешать операции», "
     "поставьте галочку «Записать» "
     "(после каждого открытия базы). Окно не закрывайте.\n"
-    "4. Сообщите администратору помощника адрес из окна скрипта и токен — он добавит базу в панели, "
-    "и её можно будет выбирать хэштегом.\n"
+    "4. Сообщите администратору помощника адрес из окна скрипта (вида http://192.168.0.51:6003/mcp) и токен — "
+    "он внесёт базу в список. Потом пришлите мне этот адрес — и спрашивайте про базу.\n"
     "Подробно, с ответами на частые проблемы — в файле «Инструкция для сотрудников»."
 )
 EXTENSION_HELP = (
@@ -80,12 +82,13 @@ class Job:
     text: str
     attachments: list[Path] = field(default_factory=list)
     on_start: Callable[[], None] | None = None
+    base_id: str | None = None   # база задана явно (API, консоль); в линии — ссылкой в тексте
 
 
 @dataclass
 class Reply:
     text: str
-    status: str                  # ok | error | limit | paused | command | need_base | denied
+    status: str                  # ok | error | limit | paused | command | need_base | denied | toolkit
     files: list[Path] = field(default_factory=list)
 
 
@@ -155,6 +158,8 @@ class Assistant:
             info["built_at"] = idx.built_at()
             for d in docs:
                 info["products"][d["product"]] = info["products"].get(d["product"], 0) + 1
+        except sqlite3.OperationalError:
+            pass                    # индекс как раз создаётся в фоне — таблиц ещё нет
         finally:
             idx.close()
         return info
@@ -184,10 +189,14 @@ class Assistant:
             self.store.reset_session(job.user.key)
             return Reply("Начинаем разговор заново.", "command")
         if cmd in ("/базы", "/bases"):
-            lines = [f"#{b.tags[1] if len(b.tags) > 1 else b.id} — {b.title}"
-                     for b in self.bases().values() if job.user.can_use(b.id)]
-            return Reply("Доступные базы:\n" + "\n".join(lines) if lines else "Вам не открыта ни одна база 1С.",
-                         "command")
+            mine = [b for b in self.bases().values()
+                    if job.user.can_use(b.id) and b.allowed_for(job.user.key) and b.link]
+            if not mine:
+                return Reply("Подключённых баз пока нет. Опубликованную базу подключите сами: установите в неё "
+                             "расширение (/расширение) и пришлите мне ссылку на базу.", "command")
+            lines = [f"• {b.title} — {b.link}" for b in mine]
+            return Reply("Ваши базы 1С:\n" + "\n".join(lines) + "\n\nЧтобы работать с базой, пришлите ссылку "
+                         "на неё — можно сразу с вопросом.", "command")
         if cmd in ("/помощь", "/help"):
             return Reply(HELP, "command")
         if cmd in ("/toolkit", "/тулкит", "/мсп"):
@@ -230,41 +239,36 @@ class Assistant:
                          "limit")
 
         bases = self.bases()
-        linked = self._connect_by_link(job, bases, started)
-        if isinstance(linked, Reply):
-            return linked
-        if linked is not None:
-            bases = self.bases()
-            choice = BaseChoice(base=linked[0], tag=None, text=linked[1])
-            if not choice.text and not job.attachments:
-                # Только ссылка — подтверждаем подключение и остаёмся в этой базе, Claude не запускаем.
-                self.store.session(job.user.key, linked[0].id, self.settings.idle_timeout_minutes, keep_base=False)
-                return Reply(self._connected_text(linked[0]), "command")
+        base, question = None, job.text.strip()
+        if job.base_id:
+            base = bases.get(job.base_id)
+            if base is None:
+                return Reply(f"Не знаю базу «{job.base_id}».", "need_base")
         else:
-            choice = pick_base(job.text, bases)
-        if choice.tag and choice.base is None:
-            known = ", ".join(f"#{b.tags[1] if len(b.tags) > 1 else b.id}" for b in bases.values()
-                              if job.user.can_use(b.id))
-            return Reply(f"Не знаю базу «#{choice.tag}». Доступные: {known or 'нет'}.", "need_base")
-        if choice.base and not job.user.can_use(choice.base.id):
-            self._log(job, choice.base.id, "denied", started)
-            return Reply(f"У вас нет доступа к базе «{choice.base.title}».", "denied")
-        question = choice.text
+            linked = self._base_by_link(job, bases, started)
+            if isinstance(linked, Reply):
+                return linked
+            if linked is not None:
+                base, question = linked
+        if base is not None and not job.user.can_use(base.id):
+            self._log(job, base.id, "denied", started)
+            return Reply(f"У вас нет доступа к базе «{base.title}».", "denied")
         if not question and not job.attachments:
-            return Reply("Напишите вопрос после хэштега базы.", "need_base")
+            if base is None:
+                return Reply("Напишите вопрос.", "need_base")
+            # Только ссылка — проверяем базу и остаёмся в ней, Claude не запускаем.
+            refusal = self._gate(job, base, started)[0]
+            if refusal:
+                return refusal
+            self.store.session(job.user.key, base.id, self.settings.idle_timeout_minutes, keep_base=False)
+            return Reply(self._connected_text(base), "command")
 
-        session = self.store.session(job.user.key, choice.base.id if choice.base else None,
-                                     self.settings.idle_timeout_minutes, keep_base=choice.base is None)
+        session = self.store.session(job.user.key, base.id if base else None,
+                                     self.settings.idle_timeout_minutes, keep_base=base is None)
         base = bases.get(session.base_id) if session.base_id else None
-        extra_env: dict[str, str] = {}
-        if base is not None and base.via_toolkit:
-            refusal, extra_env = self._toolkit_gate(job, base, started)
-            if refusal:
-                return refusal
-        elif base is not None and base.via_extension:
-            refusal = self._extension_gate(job, base, started)
-            if refusal:
-                return refusal
+        refusal, extra_env = self._gate(job, base, started) if base is not None else (None, {})
+        if refusal:
+            return refusal
         if job.on_start:
             job.on_start()
         self.refresh_knowledge_base()
@@ -290,6 +294,13 @@ class Assistant:
         return self._finish(job, base, question, result, outbox, started)
 
     TOOLKIT_RECHECK_SECONDS = 900
+
+    def _gate(self, job: Job, base: Base, started: float) -> tuple[Reply | None, dict[str, str]]:
+        if base.via_toolkit:
+            return self._toolkit_gate(job, base, started)
+        if base.via_extension:
+            return self._extension_gate(job, base, started), {}
+        return None, {}
 
     def _toolkit_gate(self, job: Job, base: Base, started: float) -> tuple[Reply | None, dict[str, str]]:
         """База на ПК сотрудника: закреплена ли за ним, есть ли токен, открыта ли,
@@ -319,16 +330,23 @@ class Assistant:
             return refuse(last.message)
         return None, {toolkit_secrets.env_name(base.id): token}
 
-    def _connect_by_link(self, job: Job, bases: dict[str, Base], started: float) -> tuple[Base, str] | Reply | None:
-        """Ссылка на опубликованную базу в сообщении: уже известная — выбираем её, новая — проверяем
-        расширение MCP_HTTPService и вносим в bases.yaml. Так сотрудник подключает базу сам."""
+    def _base_by_link(self, job: Job, bases: dict[str, Base], started: float) -> tuple[Base, str] | Reply | None:
+        """Ссылка на базу в сообщении — так сотрудник выбирает базу. Уже известная (адрес публикации или
+        MCP Toolkit) — берём её; новая опубликованная — проверяем расширение MCP_HTTPService и вносим
+        в bases.yaml. Возвращает (база, сообщение без ссылки) или None, если ссылки на базу нет."""
+        for raw, rest in onec_extension.find_links(job.text):
+            known = next((b for b in bases.values() if b.link and onec_extension.same_link(b.link, raw)), None)
+            if known is not None:
+                return known, rest
+            if onec_extension.is_toolkit_url(raw):
+                text = (f"Копии базы по адресу {raw} нет в списке помощника. Передайте этот адрес и токен "
+                        "MCP Toolkit администратору помощника — он внесёт базу, и пришлите ссылку ещё раз.")
+                self._log(job, None, "toolkit", started, error=text)
+                return Reply(text, "toolkit")
         found = onec_extension.find_publication(job.text)
         if found is None:
             return None
         url, rest = found
-        known = next((b for b in bases.values() if b.via_extension and b.url.rstrip("/").lower() == url.lower()), None)
-        if known is not None:
-            return known, rest
         check = onec_extension.probe(url, timeout=15)
         if not check.ok:
             if not onec_extension.looks_like_1c(url):
@@ -339,7 +357,7 @@ class Assistant:
         base_id = onec_extension.base_id_for(url, set(bases))
         title = f"{check.config or 'База'} ({url.rstrip('/').split('/')[-1]})"
         try:
-            for key, value in (("title", title), ("tags", [base_id]), ("mode", "extension"), ("url", url),
+            for key, value in (("title", title), ("mode", "extension"), ("url", url),
                                ("owners", []), ("added_by", job.user.name)):
                 set_value(self.settings.bases_path, (base_id, key), value)
         except (YamlEditError, OSError) as exc:
@@ -351,9 +369,11 @@ class Assistant:
 
     def _connected_text(self, base: Base) -> str:
         check = self.toolkit_checks.get(base.id)
-        about = f" Конфигурация {check.config} {check.version}, {check.detail}." if check and check.ok else ""
-        return (f"Подключил базу «{base.title}».{about} Хэштег: #{base.id}. Спрашивайте — дальше можно без "
-                "хэштега, я помню разговор. Базу я только читаю, данные в ней не меняю.")
+        about = f" Конфигурация {check.config_title or check.config} {check.version}." if check and check.ok else ""
+        access = ("Данные в ней я могу исправлять." if base.via_toolkit and base.write
+                  else "Базу я только читаю, данные в ней не меняю.")
+        return (f"Работаю с базой «{base.title}».{about} Спрашивайте — ссылку повторять не нужно, я помню "
+                f"разговор. {access} Другая база — пришлите ссылку на неё, /новый — начать заново.")
 
     def _extension_gate(self, job: Job, base: Base, started: float) -> Reply | None:
         """Опубликованная база с расширением MCP_HTTPService: отвечает ли, пускает ли «Администратор»/«1»."""
@@ -412,7 +432,7 @@ class Assistant:
             if result.session_total_cost is not None else None
         files = sorted(p for p in outbox.iterdir() if p.is_file()) if outbox.is_dir() else []
         if result.is_error:
-            # Сломанный разговор Claude не продолжаем, но база остаётся: «исправь» без хэштега пойдёт в неё же.
+            # Сломанный разговор Claude не продолжаем, но база остаётся: «исправь» пойдёт в неё же.
             self.store.restart_session(job.user.key)
             self._log(job, base_id, "error", started, cost=cost, error=result.error)
             return Reply("Не получилось ответить: произошла ошибка. Попробуйте ещё раз "

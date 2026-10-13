@@ -39,12 +39,15 @@ class ClaudeSettings:
             self.config_dir = str(repo_path(self.config_dir))
 
 
+# Ключи прежнего приёма личных сообщений: бот работает только через линию «ИИ-помощник»,
+# а в settings.yaml на сервере они могли остаться — не мешают запуску.
+LEGACY_CONNECT_KEYS = {"channel", "receive", "agent_login_env", "history_colleagues",
+                       "history_interval_seconds", "history_hours"}
+
+
 @dataclass
 class ConnectSettings:
-    # colleague — личные сообщения сотрудников учётной записи бота (приём через
-    # «API приложений», ответ через REST); line — линия поддержки и вебхук.
-    channel: str = "colleague"
-    agent_login_env: str = "CONNECT_AGENT_LOGIN"   # логин учётки «ГК Эксперт | ИИ-помощник»
+    """Своя линия «ИИ-помощник»: вебхук 1С-Коннекта → /connect/hook, ответы — REST SendMessageLine."""
     api_base_url: str = "https://push.1c-connect.com"
     api_login_env: str = "CONNECT_API_LOGIN"
     api_password_env: str = "CONNECT_API_PASSWORD"
@@ -56,12 +59,6 @@ class ConnectSettings:
     request_timeout_seconds: int = 60
     file_download_hosts: list[str] = field(default_factory=lambda: ["buhphone.com", "1c-connect.com"])
     max_attachment_mb: int = 20
-    # Приём личных сообщений: history — опрос SOAP-истории (работает с новым
-    # «1C-Connect Desktop»), pipe — «API приложений» старого клиента.
-    receive: str = "history"
-    history_colleagues: list[str] = field(default_factory=list)   # UUID сотрудников: запрос истории на каждого
-    history_interval_seconds: float = 75.0   # лимит API — 100 запросов в час на всех
-    history_hours: float = 6.0
     line_hook: str = "line"          # SetHook своей линии: line (бот-подписка одна на учётку API — у старого бота) | bot
     webhook_mode: str = "tunnel"     # tunnel — HTTPS через Cloudflare без домена; url — свой адрес
     public_url: str = ""             # для webhook_mode: url, например https://bot.example.kz
@@ -79,10 +76,6 @@ class ConnectSettings:
     @property
     def line_enabled(self) -> bool:
         return bool(self.line_id) and self.line_id != self.foreign_line_id
-
-    @property
-    def agent_login(self) -> str:
-        return os.environ.get(self.agent_login_env, "")
 
     @property
     def login(self) -> str:
@@ -190,7 +183,8 @@ class Settings:
         dev = raw.get("dev", {}) or {}
         return Settings(
             claude=ClaudeSettings(**raw.get("claude", {})),
-            connect=ConnectSettings(**raw.get("connect", {})),
+            connect=ConnectSettings(**{k: v for k, v in (raw.get("connect") or {}).items()
+                                       if k not in LEGACY_CONNECT_KEYS}),
             api_clients=[ApiClient(**c) for c in (raw.get("api", {}) or {}).get("clients", []) or []],
             knowledge_base=KnowledgeBaseSettings(
                 root=repo_path(kb.get("root", "База знаний")),

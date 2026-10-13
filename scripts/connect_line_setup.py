@@ -1,13 +1,14 @@
 """Внутренняя линия «ИИ-помощник» в 1С-Коннекте — сообщения боту приходят мгновенно, вебхуком.
 
     python scripts/connect_line_setup.py             создать линию (если её ещё нет), дать компетенцию
-                                                     учётке бота, подключить сотрудников, вписать line_id
+                                                     учётке бота, вписать line_id
     python scripts/connect_line_setup.py status      линии организации: какая с ботом, где вебхук
 
 Линия только для своих сотрудников (ServiceUsersAudience=FORSPECIALISTS), клиенты её не видят.
 Галочку «Внешний сервер для обработки данных» (карточка линии → Чат-бот) API не ставит —
 её включают в кабинете администратора. После этого бот сам поднимет туннель и вебхук.
-Методы — SOAP PartnerWebAPI2 (ServiceLineKindAdd, CompetenceAdd, UserServiceLineAdd) и
+Линия подключается сотрудникам сама (AutoConnectServiceForSpecialists).
+Методы — SOAP PartnerWebAPI2 (ServiceLineKindAdd, CompetenceAdd) и
 REST GetLines (/v1/line/) по публичной документации 1С-Коннект. Пароли не печатаются.
 """
 from __future__ import annotations
@@ -40,20 +41,11 @@ def _prop(name: str, typ: str, value) -> str:
             f'<Value xsi:type="xs:{typ}">{escape(str(value))}</Value></Property>')
 
 
-def _table(columns: list[tuple[str, str]], rows: list[list]) -> str:
-    cols = "".join(f"<d:column><d:Name>{n}</d:Name><d:ValueType><d:Type>xs:{t}</d:Type></d:ValueType></d:column>"
-                   for n, t in columns)
-    body = "".join("<d:row>" + "".join(f"<d:Value>{escape(str(v))}</d:Value>" for v in r) + "</d:row>"
-                   for r in rows)
-    return cols + body
-
-
-def soap(s: Settings, method: str, params: str, table: bool = False) -> tuple[str, str]:
-    attrs = ' xmlns:d="http://v8.1c.ru/8.1/data/core" xsi:type="d:ValueTable"' if table else ""
+def soap(s: Settings, method: str, params: str) -> tuple[str, str]:
     body = ('<?xml version="1.0" encoding="utf-8"?>'
             '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:par="' + NS + '"'
             ' xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
-            f'<soap:Body><par:{method}><par:Params{attrs}>{params}</par:Params></par:{method}></soap:Body>'
+            f'<soap:Body><par:{method}><par:Params>{params}</par:Params></par:{method}></soap:Body>'
             '</soap:Envelope>').encode("utf-8")
     r = requests.post(SOAP_URL, data=body, auth=(s.connect.login, s.connect.password), timeout=60,
                       headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": f'"{NS}#PartnerWebAPI2:{method}"'})
@@ -109,13 +101,6 @@ def setup(s: Settings) -> int:
     code, text = soap(s, "CompetenceAdd", _prop("SpecialistID", "string", cs.bot_specialist_id)
                       + _prop("ServiceID", "string", line_id) + _prop("Priority", "integer", 1))
     print(f"Компетенция учётке бота: {code} {'' if code == 'SUCCESS' else re.sub(r'<[^>]+>', ' ', text)[-200:]}")
-
-    people = [p for p in cs.history_colleagues if p]
-    if people:
-        code, text = soap(s, "UserServiceLineAdd", _table(
-            [("ServiceUserID", "string"), ("ServiceID", "string")], [[p, line_id] for p in people]), table=True)
-        print(f"Подключение линии сотрудникам ({len(people)}): {code} "
-              f"{'' if code == 'SUCCESS' else re.sub(r'<[^>]+>', ' ', text)[-300:]}")
 
     if s.source and s.connect.line_id != line_id:
         set_value(s.source, ("connect", "line_id"), line_id)

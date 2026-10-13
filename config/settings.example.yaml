@@ -10,21 +10,16 @@ claude:
   max_turns: 60
   mcp_timeout_ms: 30000
 
-connect:
-  channel: "colleague"          # colleague — личные сообщения учётке «ГК Эксперт | ИИ-помощник»; line — линия поддержки
-  receive: "history"            # history — опрос SOAP-истории чатов (новый 1C-Connect Desktop); pipe — «API приложений» старого клиента
-  history_colleagues: []        # UUID сотрудников, которым отвечает бот (один запрос истории на каждого)
-  history_interval_seconds: 75  # лимит API 100 запросов в час — на всех, кто ходит этой учёткой
-  agent_login_env: "CONNECT_AGENT_LOGIN"   # только для receive: pipe — логин учётки в десктопном приложении
+connect:                        # сотрудники пишут в линию «ИИ-помощник» — вебхук, ответы от учётки бота
   api_base_url: "https://push.1c-connect.com"
   api_login_env: "CONNECT_API_LOGIN"
   api_password_env: "CONNECT_API_PASSWORD"
   webhook_token_env: "CONNECT_WEBHOOK_TOKEN"   # генерируется сам при первом запуске
   line_id: ""                   # своя линия «ИИ-помощник» — заполняет scripts/connect_line_setup.py
   bot_specialist_id: ""         # пусто — берётся из CONNECT_BOT_SPECIALIST_ID
-  webhook_mode: "tunnel"        # только channel: line. tunnel — HTTPS через Cloudflare без домена и сертификата
+  webhook_mode: "tunnel"        # tunnel — HTTPS через Cloudflare без домена и сертификата
   public_url: ""                # только для webhook_mode: url
-  ack_text: "Принял, работаю над ответом…"   # пусто — не отправлять
+  ack_text: "Принял, работаю над ответом…"   # сразу в ответ: у линии 30 секунд, иначе обращение уйдёт специалисту
   max_message_chars: 4000
   file_download_hosts: ["buhphone.com", "1c-connect.com"]
   max_attachment_mb: 20

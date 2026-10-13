@@ -22,13 +22,11 @@ IVAN = "6a24f7b0-b9bb-42fa-91f2-250a02329a8a"
 YULIA = "d5766bf1-d9f3-11e5-80e1-0025904f970d"
 BASES = f"""gke_ivan:
   title: "ГКЭ у Ивана"
-  tags: ["гке"]
   toolkit_url: "http://192.168.0.51:6003/mcp"
   owners: ["{IVAN}"]
   write: true
 osi_ro:
   title: "ОСИ только чтение"
-  tags: ["оси"]
   toolkit_url: "http://192.168.0.52:6003/mcp"
 """
 
@@ -89,21 +87,21 @@ def _ask(env, monkeypatch, user_key, text, *, health=(True, ""), probe=None):
 
 
 def test_gate_refusals_do_not_start_claude(env, monkeypatch):
-    reply, runner = _ask(env, monkeypatch, YULIA, "#гке остатки")
+    reply, runner = _ask(env, monkeypatch, YULIA, "http://192.168.0.51:6003/mcp остатки")
     assert reply.status == "denied" and not runner.calls                     # база закреплена за Иваном
-    reply, runner = _ask(env, monkeypatch, IVAN, "#гке остатки")
+    reply, runner = _ask(env, monkeypatch, IVAN, "http://192.168.0.51:6003/mcp остатки")
     assert "не задан токен" in reply.text and not runner.calls
     toolkit_secrets.set_token("gke_ivan", "tok")
-    reply, runner = _ask(env, monkeypatch, IVAN, "#гке остатки", health=(False, "нет связи"))
+    reply, runner = _ask(env, monkeypatch, IVAN, "http://192.168.0.51:6003/mcp остатки", health=(False, "нет связи"))
     assert "недоступна" in reply.text and not runner.calls
     bad = onec_toolkit.ProbeResult(ok=False, message=onec_toolkit.WRONG_PASSWORD)
-    reply, runner = _ask(env, monkeypatch, IVAN, "#гке остатки", probe=bad)
+    reply, runner = _ask(env, monkeypatch, IVAN, "http://192.168.0.51:6003/mcp остатки", probe=bad)
     assert "Пароль «1» не подходит" in reply.text and not runner.calls
 
 
 def test_gate_passes_token_only_via_env(env, monkeypatch):
     toolkit_secrets.set_token("gke_ivan", "tok-123")
-    reply, runner = _ask(env, monkeypatch, IVAN, "#гке почему не проводится документ")
+    reply, runner = _ask(env, monkeypatch, IVAN, "http://192.168.0.51:6003/mcp почему не проводится документ")
     assert reply.status == "ok" and len(runner.calls) == 1
     call = runner.calls[0]
     assert call["extra_env"] == {"ONEC_TOOLKIT_TOKEN_GKE_IVAN": "tok-123"}
@@ -119,7 +117,7 @@ def test_gate_passes_token_only_via_env(env, monkeypatch):
 
 def test_read_only_base_disallows_execute_code(env, monkeypatch):
     toolkit_secrets.set_token("osi_ro", "tok")
-    reply, runner = _ask(env, monkeypatch, YULIA, "#оси остатки")
+    reply, runner = _ask(env, monkeypatch, YULIA, "http://192.168.0.52:6003/mcp/ остатки")
     call = runner.calls[0]
     assert "mcp__onec__execute_code" in call["disallowed"] and "mcp__onec__execute_code" not in call["allowed"]
 
@@ -141,7 +139,7 @@ def test_parse_check_is_anonymization_safe():
 
 
 class FakeConnect:
-    def send_colleague_message(self, **kw):
+    def send_message(self, **kw):
         pass
 
 
@@ -149,7 +147,7 @@ def test_panel_bases_crud(env, tmp_path):
     settings_file = tmp_path / "settings.yaml"
     shutil.copy(REPO / "config" / "settings.example.yaml", settings_file)
     env.source = settings_file
-    app = create_app(env, connect=FakeConnect(), colleague_source=lambda on, stop: None)
+    app = create_app(env, connect=FakeConnect())
     client = TestClient(app, base_url=f"http://127.0.0.1:{env.port}", client=("127.0.0.1", 50000))
     with client:
         token = re.search(r'name="panel-token" content="([^"]+)"', client.get("/panel").text).group(1)
@@ -158,11 +156,11 @@ def test_panel_bases_crud(env, tmp_path):
                           headers=auth)
         assert bad.status_code == 400
         r = client.post("/panel/api/bases", headers=auth, json={
-            "id": "new_base", "title": "Новая", "tags": "#нов, новая", "toolkit_url": "http://10.0.0.5:6003/mcp",
+            "id": "new_base", "title": "Новая", "toolkit_url": "http://10.0.0.5:6003/mcp",
             "token": "t-1", "write": True, "owners": [YULIA]})
         assert r.status_code == 200, r.text
         row = next(b for b in r.json()["bases"] if b["id"] == "new_base")
-        assert row["token_set"] and row["write"] and row["tags"] == ["нов", "новая"]
+        assert row["token_set"] and row["write"] and row["link"] == "http://10.0.0.5:6003/mcp"
         assert "t-1" not in env.bases_path.read_text(encoding="utf-8")
         assert toolkit_secrets.get_token("new_base") == "t-1"
         raw = yaml.safe_load(env.bases_path.read_text(encoding="utf-8"))

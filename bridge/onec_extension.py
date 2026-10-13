@@ -6,7 +6,7 @@
 
 Сотрудник подключает базу сам: присылает боту ссылку на неё. Бот находит в
 сообщении адрес публикации, проверяет расширение и вносит базу в bases.yaml —
-дальше она доступна по хэштегу, а разговор сразу продолжается в ней.
+разговор сразу продолжается в ней. Ссылкой же сотрудник выбирает базу и потом.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from common.onec_login import ADMIN_PASSWORD, ADMIN_USER
 from mcp_1c.onec_client import OneCError, OneCExtensionClient
 
 _URL_RE = re.compile(r"https?://[^\s<>\"'«»]+", re.I)
+_TOOLKIT_RE = re.compile(r"^https?://[^/\s]+:\d{1,5}/mcp/?$", re.I)
 # Части адреса после имени публикации: веб-клиент (/ru_RU/, #e1cib/...), сервисы (/hs/, /odata/, /ws/)
 _SERVICE_PARTS = {"hs", "odata", "ws", "ru_ru", "en_us", "ru", "en", "e1cib", "e1csys"}
 _TRANSLIT = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
@@ -66,13 +67,36 @@ def publication_url(raw: str) -> str | None:
     return f"{parts.scheme.lower()}://{parts.netloc}/" + "/".join(segments)
 
 
+def _rest(text: str, m: re.Match) -> str:
+    return re.sub(r"[ \t]{2,}", " ", text[:m.start()] + text[m.end():]).strip()
+
+
+def find_links(text: str) -> list[tuple[str, str]]:
+    """Все ссылки в сообщении: (ссылка, сообщение без неё)."""
+    return [(m.group(0).rstrip(".,;:!?)"), _rest(text, m)) for m in _URL_RE.finditer(text)]
+
+
+def _norm(url: str) -> str:
+    parts = urlsplit(url.strip())
+    return f"{parts.scheme}://{parts.netloc}{parts.path.rstrip('/')}".lower()
+
+
+def same_link(base_link: str, raw: str) -> bool:
+    """Ссылка из чата ведёт на эту базу? Для публикации годится и адрес веб-клиента (…/ru_RU/#e1cib/…)."""
+    return _norm(base_link) in {_norm(raw), _norm(publication_url(raw) or "")}
+
+
+def is_toolkit_url(raw: str) -> bool:
+    """Адрес MCP Toolkit на ПК сотрудника: http://192.168.0.51:6003/mcp."""
+    return bool(_TOOLKIT_RE.match(raw))
+
+
 def find_publication(text: str) -> tuple[str, str] | None:
-    """Первая ссылка на базу в сообщении → (адрес публикации, сообщение без ссылки)."""
+    """Первая ссылка на опубликованную базу в сообщении → (адрес публикации, сообщение без ссылки)."""
     for m in _URL_RE.finditer(text):
         url = publication_url(m.group(0))
-        if url:
-            rest = re.sub(r"[ \t]{2,}", " ", text[:m.start()] + text[m.end():]).strip()
-            return url, rest
+        if url and not is_toolkit_url(m.group(0).rstrip(".,;:!?)")):
+            return url, _rest(text, m)
     return None
 
 

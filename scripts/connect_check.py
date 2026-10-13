@@ -1,21 +1,13 @@
-"""Проверка интеграции с 1С-Коннект по шагам — с фактическими запросами и HTTP-кодами.
+"""Проверка доступа к API 1С-Коннект — с фактическими запросами и HTTP-кодами.
 
-    python scripts/connect_check.py auth                     # логин/пароль API + UUID учётки бота
-    python scripts/connect_check.py send <UUID_сотрудника> [текст]   # личное сообщение от бота
-    python scripts/connect_check.py inbound <UUID_сотрудника> [текст] # входящее → локальный мост
-    python scripts/connect_check.py pipe [секунд]            # что приходит из 1С-Коннект (приложение)
-    python scripts/connect_check.py history-probe [all|to-bot|from-bot] [часов]  # сколько чатов отдаёт
-                                                       # один вызов истории (только счётчики)
+    python scripts/connect_check.py auth     # логин/пароль API и учётка бота среди специалистов
 
+Состояние линии «ИИ-помощник» и вебхука — scripts/connect_line_setup.py status.
 Пароль и заголовок Authorization не печатаются.
 """
 from __future__ import annotations
 
-import json
 import sys
-import threading
-import uuid
-from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -26,16 +18,7 @@ from common.win_utf8 import ensure_utf8_stdio  # noqa: E402
 
 ensure_utf8_stdio()
 
-from bridge import connect_pipe  # noqa: E402
 from bridge.config import Settings  # noqa: E402
-
-
-def show(method: str, url: str, body: dict | None, r: requests.Response) -> None:
-    print(f"> {method} {url}")
-    if body is not None:
-        print("> " + json.dumps(body, ensure_ascii=False))
-    print(f"< HTTP {r.status_code}")
-    print("< " + (r.text[:1500] if r.text else "(пустое тело)"))
 
 
 def auth(s: Settings) -> int:
@@ -50,113 +33,20 @@ def auth(s: Settings) -> int:
         print("< " + r.text[:500])
         return 1
     people = r.json()
-    print(f"< сотрудников: {len(people)}")
-    if cs.agent_login:
-        bot = next((p for p in people if str(p.get("login")) == cs.agent_login), None)
-        if bot:
-            print(f"Учётка бота «{bot.get('surname', '')} {bot.get('name', '')}»: user_id={bot['user_id']}")
-            if bot["user_id"] != cs.bot_specialist_id:
-                print(f"→ впишите в .env: CONNECT_BOT_SPECIALIST_ID={bot['user_id']}")
-        else:
-            print(f"Логин {cs.agent_login} не найден среди специалистов линий — UUID бота указать вручную")
-    return 0
-
-
-def send(s: Settings, recipient: str, text: str) -> int:
-    cs = s.connect
-    body = {"author_id": cs.bot_specialist_id, "recepient_id": recipient, "text": text}
-    url = f"{cs.api_base_url}/v1/colleague/send/message/"
-    r = requests.post(url, json=body, auth=(cs.login, cs.password), headers={"Accept": "application/json"},
-                      timeout=30)
-    show("POST", url, body, r)
-    return 0 if r.ok else 1
-
-
-def inbound(s: Settings, sender: str, text: str) -> int:
-    body = {"platform": "1c-connect", "event": "message_received", "message_id": str(uuid.uuid4()),
-            "sender_id": sender, "recipient_id": s.connect.bot_specialist_id, "text": text,
-            "timestamp": datetime.now().astimezone().isoformat(timespec="seconds")}
-    url = f"http://127.0.0.1:{s.port}/connect/colleague/message"
-    r = requests.post(url, json=body, headers={"Authorization": f"Bearer {s.connect.webhook_token}"}, timeout=30)
-    show("POST", url, body, r)
-    print("Ответ бота придёт сотруднику в личный чат 1С-Коннект (см. logs/bridge.log).")
-    return 0 if r.status_code == 202 else 1
-
-
-def pipe(s: Settings, seconds: int) -> int:
-    login = s.connect.agent_login
-    if not login:
-        print(f"Не задан {s.connect.agent_login_env} в .env")
-        return 1
-    stop = threading.Event()
-    got = []
-
-    def on_message(m):
-        got.append(m)
-        print(f"< входящее {m.message_id} от {m.colleague_id} ({m.sent_at}): {m.text!r}")
-
-    print(f"Слушаю {connect_pipe.PIPE_PREFIX}{login} {seconds} с — напишите боту в 1С-Коннект…")
-    t = threading.Thread(target=connect_pipe.listen, args=(login, on_message, stop),
-                         kwargs={"retry_min": 2, "retry_max": 5}, daemon=True)
-    t.start()
-    t.join(seconds)
-    stop.set()
-    print(f"Получено сообщений: {len(got)}. Мост при этом лучше остановить: канал рассчитан на одного клиента.")
-    return 0 if got else 1
-
-
-def history_probe(s: Settings, variant: str, hours: float) -> int:
-    """Отдаёт ли GetHistoryOfColleaguesChat несколько чатов за один вызов (по документации
-    обязателен только PeriodFrom). Печатает только коды и счётчики — не текст переписки."""
-    import base64
-    import io
-    import re
-    import zipfile
-    from datetime import timedelta
-
-    from bridge import connect_history as ch
-
-    cs, bot = s.connect, s.connect.bot_specialist_id
-    now = datetime.now()
-    props = (ch._prop("PeriodFrom", "dateTime", (now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S"))
-             + ch._prop("PeriodTo", "dateTime", now.strftime("%Y-%m-%dT%H:%M:%S")))
-    if variant == "to-bot":
-        props += ch._prop("Specialist2ID", "string", bot)
-    elif variant == "from-bot":
-        props += ch._prop("Specialist1ID", "string", bot)
-    body = ('<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
-            ' xmlns:par="http://buhphone.com/PartnerWebAPI2" xmlns:xs="http://www.w3.org/2001/XMLSchema"'
-            ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><soap:Body>'
-            f'<par:GetHistoryOfColleaguesChat><par:Params>{props}</par:Params>'
-            '</par:GetHistoryOfColleaguesChat></soap:Body></soap:Envelope>').encode()
-    r = requests.post(ch.SOAP_URL, data=body, auth=(cs.login, cs.password), timeout=120,
-                      headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": f'"{ch.SOAP_ACTION}"'})
-    print(f"вариант {variant}, окно {hours} ч → HTTP {r.status_code}")
-    code = re.findall(r'name="ResultCode"[^>]*>\s*<Value[^>]*>([^<]*)', r.text)
-    data = re.findall(r'name="ResultData"[^>]*>\s*<Value[^>]*>([^<]{0,160})', r.text)
-    print("ResultCode:", code, "ResultData:", data[:1])
-    files = []
-    for blob in re.findall(r'name="HistoryOfChatHtml"[^>]*>\s*<Value[^>]*>([^<]+)', r.text):
-        files += zipfile.ZipFile(io.BytesIO(base64.b64decode(blob))).namelist()
-    pairs = {re.sub(r"_\d{4}-\d{2}-\d{2}\.html$", "", f.split("/")[-1]) for f in files if f.endswith(".html")}
-    print(f"файлов: {len(files)}, пар собеседников: {len(pairs)}, из них с ботом: "
-          f"{sum(1 for p in pairs if bot and bot in p)}")
+    print(f"< специалистов линий: {len(people)}")
+    bot = next((p for p in people if str(p.get("user_id")) == cs.bot_specialist_id), None)
+    if bot:
+        print(f"Учётка бота: «{bot.get('surname', '')} {bot.get('name', '')}» ({cs.bot_specialist_id})")
+    else:
+        print(f"Учётки бота {cs.bot_specialist_id or '(CONNECT_BOT_SPECIALIST_ID не задан)'} среди специалистов "
+              "линий нет — проверьте компетенцию на линии «ИИ-помощник» (scripts/connect_line_setup.py)")
     return 0
 
 
 def main() -> int:
     s = Settings.load()
-    args = sys.argv[1:]
-    if args[:1] == ["history-probe"]:
-        return history_probe(s, args[1] if len(args) > 1 else "all", float(args[2]) if len(args) > 2 else 3)
-    if args[:1] == ["auth"]:
+    if sys.argv[1:2] == ["auth"]:
         return auth(s)
-    if args[:1] == ["send"] and len(args) >= 2:
-        return send(s, args[1], " ".join(args[2:]) or "Проверка ИИ-помощника ГК «Эксперт».")
-    if args[:1] == ["inbound"] and len(args) >= 2:
-        return inbound(s, args[1], " ".join(args[2:]) or "Привет, бот!")
-    if args[:1] == ["pipe"]:
-        return pipe(s, int(args[1]) if len(args) > 1 else 60)
     print(__doc__)
     return 1
 
