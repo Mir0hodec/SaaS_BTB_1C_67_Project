@@ -57,6 +57,8 @@ WRONG_PASSWORD = ("Пароль «1» не подходит для пользо�
                   "у пользователя Администратор поставлен пароль 1, и откройте базу заново.")
 WRONG_USER = ("База открыта под пользователем «{user}». Откройте её под «Администратор» с паролем 1 "
               "(ярлыком «1С + MCP Toolkit») и запустите MCP Toolkit заново.")
+WRONG_TOKEN = ("Токен не подошёл: в окне MCP Toolkit сейчас другой токен (его могли сгенерировать заново). "
+               "Передайте новый токен администратору помощника — он обновит его в панели, раздел «Базы 1С».")
 
 
 class ToolkitError(Exception):
@@ -74,6 +76,16 @@ class ProbeResult:
     version: str = ""
     tools: list[str] = field(default_factory=list)
     checked_at: float = field(default_factory=time.time)
+
+
+def token_ok(mcp_url: str, token: str, timeout: float = 5.0) -> bool:
+    """Пустой POST: 401/403 — токен в форме MCP Toolkit другой. Сессию MCP не открывает."""
+    try:
+        r = requests.post(mcp_url, json={}, timeout=timeout,
+                          headers={"Authorization": f"Bearer {token}", "Accept": "application/json, text/event-stream"})
+    except requests.RequestException:
+        return True             # сетевую ошибку покажет основной вызов
+    return r.status_code not in (401, 403)
 
 
 def health_url(mcp_url: str) -> str:
@@ -150,14 +162,14 @@ def probe(mcp_url: str, token: str, timeout: float = 60.0) -> ProbeResult:
     if not alive:
         return ProbeResult(ok=False, message=f"База недоступна ({why}). Откройте базу и в MCP Toolkit нажмите "
                                              "«Запустить сервер».")
+    if not token_ok(mcp_url, token):
+        return ProbeResult(ok=False, message=WRONG_TOKEN)
     try:
         tools, (check_text,) = call(mcp_url, token, [("execute_code", {"code": CHECK_CODE})], timeout)
     except ToolkitError as exc:
         return ProbeResult(ok=False, message=f"MCP Toolkit: {exc}")
     except Exception as exc:  # noqa: BLE001 — сетевые и протокольные ошибки клиента MCP
         text = str(exc) or type(exc).__name__
-        if "401" in text or "403" in text:
-            text = "токен не подошёл — сверьте токен в панели с токеном в форме MCP Toolkit"
         return ProbeResult(ok=False, message=f"MCP Toolkit не ответил: {text[:300]}")
     try:
         res = parse_check(check_text)

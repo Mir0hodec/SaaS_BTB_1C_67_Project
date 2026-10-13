@@ -34,3 +34,5 @@ bilgir_backup_*.zip
 config/*.bak
 .venv/
 .secrets/
+extensions/*
+!extensions/README.txt

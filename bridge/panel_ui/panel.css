@@ -291,3 +291,29 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px v
   .choice, .choice.four { grid-template-columns: 1fr 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* справка: инструкции из docs/*.md */
+.doc { max-width: 860px; line-height: 1.6; font-size: 14.5px; }
+.doc h1 { font-size: 22px; margin: 4px 0 14px; letter-spacing: -.01em; }
+.doc h2 { font-size: 17px; margin: 26px 0 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+.doc h3 { font-size: 15px; margin: 18px 0 6px; }
+.doc p { margin: 8px 0; }
+.doc ul, .doc ol { padding-left: 22px; margin: 6px 0; }
+.doc li { margin: 3px 0; }
+.doc code { background: var(--surface-2); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; font: 12.5px Consolas, monospace; }
+.doc pre { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; overflow: auto; }
+.doc pre code { border: none; padding: 0; background: none; }
+.doc table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13.5px; }
+.doc th, .doc td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+.doc th { background: var(--surface-2); font-weight: 600; }
+.doc blockquote { margin: 10px 0; padding: 8px 14px; background: var(--warn-soft); border-left: 4px solid var(--warn); border-radius: 8px; }
+.doc blockquote p { margin: 4px 0; }
+.kit { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
+@media print {
+  .side, .top, .no-print, .toasts { display: none !important; }
+  .app { display: block; }
+  .main { padding: 0; }
+  .card { box-shadow: none; border: none; padding: 0; }
+  body { background: #fff; }
+}

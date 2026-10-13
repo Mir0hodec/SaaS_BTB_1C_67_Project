@@ -32,7 +32,7 @@ import yaml
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
-from bridge import onec_toolkit, toolkit_secrets
+from bridge import docs, onec_toolkit, toolkit_secrets
 from bridge.access import load_bases
 from bridge.config import REPO_ROOT, Settings
 from bridge.connect_directory import Directory, DirectoryError
@@ -558,7 +558,25 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
     @r.get("/panel/api/bases")
     def bases(request: Request) -> dict:
         guard(request, api=True)
-        return {"bases": bases_view(), "admin_user": onec_toolkit.ADMIN_USER}
+        files = lambda paths: [{"name": p.name, "size": p.stat().st_size} for p in paths]  # noqa: E731
+        return {"bases": bases_view(), "admin_user": onec_toolkit.ADMIN_USER,
+                "kit": files(docs.toolkit_files()), "extensions": files(docs.extension_files()),
+                "extensions_dir": str(docs.EXTENSIONS_DIR)}
+
+    @r.get("/panel/api/docs")
+    def docs_list(request: Request) -> dict:
+        guard(request, api=True)
+        return {"docs": [{"id": k, "title": title} for k, (title, path) in docs.DOCS.items() if path.is_file()]}
+
+    @r.get("/panel/api/docs/{doc_id}")
+    def doc(doc_id: str, request: Request) -> dict:
+        guard(request, api=True)
+        if doc_id not in docs.DOCS or not docs.DOCS[doc_id][1].is_file():
+            raise HTTPException(404, "нет такой инструкции")
+        title, path = docs.DOCS[doc_id]
+        file_name, standalone = docs.standalone_html(doc_id)
+        return {"id": doc_id, "title": title, "html": docs.render_markdown(path.read_text(encoding="utf-8")),
+                "file_name": file_name, "standalone": standalone}
 
     @r.post("/panel/api/bases")
     async def save_base(request: Request) -> dict:

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from bridge.access import Base, User, load_bases, load_users, pick_base
-from bridge import onec_toolkit, toolkit_secrets
+from bridge import docs, onec_toolkit, toolkit_secrets
 from bridge.answer import clean_answer
 from bridge.claude_runner import ClaudeRunner, RunResult
 from bridge.config import REPO_ROOT, Settings
@@ -41,7 +41,8 @@ HELP = (
     "Вопросы «как сделать» — ищу в базе знаний компании.\n"
     "Проверка контрагента: «проверь контрагента 750710450345» — долг и неподписанные ЭАВР.\n"
     "Можно прислать скриншот, PDF или файл вместе с вопросом.\n"
-    "Команды: /базы — список баз, /новый — начать разговор заново."
+    "Команды: /базы — список баз, /новый — начать разговор заново, /инструкция — подробная инструкция файлом, "
+    "/toolkit — подключить к помощнику свою копию базы."
 )
 
 
@@ -50,11 +51,17 @@ TOOLKIT_HELP = (
     "1. В своей копии базы задайте пользователю «Администратор» пароль 1 (именно 1, не рабочий пароль).\n"
     "2. Запустите employee_toolkit.ps1 правой кнопкой → «Выполнить с помощью PowerShell»: он откроет порт для "
     "сервера помощника и создаст ярлык «1С + MCP Toolkit».\n"
-    "3. Откройте базу этим ярлыком. В окне MCP Toolkit: режим «Встроенный сервер», «Сгенерировать» токен, "
-    "включите автоподтверждение «Записать», нажмите «Запустить сервер». Окно не закрывайте.\n"
+    "3. Откройте базу этим ярлыком — MCP Toolkit запустится сам. В первый раз нажмите «Сгенерировать» у поля "
+    "«Токен доступа». Если помощник должен исправлять данные — включите автоподтверждение «Записать» "
+    "(после каждого открытия базы). Окно не закрывайте.\n"
     "4. Сообщите администратору помощника адрес из окна скрипта и токен — он добавит базу в панели, "
     "и её можно будет выбирать хэштегом.\n"
-    "MCP_Toolkit.epf — для 64-разрядной 1С, MCP_Toolkit_x86.epf — для 32-разрядной."
+    "Подробно, с ответами на частые проблемы — в файле «Инструкция для сотрудников»."
+)
+EXTENSION_HELP = (
+    "Расширение для копии базы: Все функции → Стандартные → Управление расширениями конфигурации → "
+    "«Добавить из файла» (в конфигурациях на БСП: Администрирование → Печатные формы, отчёты и обработки → "
+    "Расширения). Затем перезапустите 1С."
 )
 
 
@@ -176,13 +183,27 @@ class Assistant:
         if cmd in ("/помощь", "/help"):
             return Reply(HELP, "command")
         if cmd in ("/toolkit", "/тулкит", "/мсп"):
-            files = [f for f in (REPO_ROOT / "tools" / "MCP_Toolkit.epf", REPO_ROOT / "tools" / "MCP_Toolkit_x86.epf",
-                                 REPO_ROOT / "scripts" / "employee_toolkit.ps1") if f.is_file()]
-            return Reply(TOOLKIT_HELP if files else "Обработка MCP Toolkit на сервере не установлена — "
-                         "попросите администратора выполнить scripts/install_1c_skills.ps1.", "command", files)
+            files = docs.toolkit_files()
+            if not files:
+                return Reply("Обработка MCP Toolkit на сервере не установлена — попросите администратора выполнить "
+                             "scripts/install_1c_skills.ps1.", "command")
+            extensions = docs.extension_files()
+            text = TOOLKIT_HELP + ("\n\n" + EXTENSION_HELP if extensions else "")
+            return Reply(text, "command", files + [self._instruction()] + extensions)
+        if cmd in ("/инструкция", "/instruction", "/docs"):
+            return Reply("Инструкция для сотрудников — в файле: откройте его в браузере, можно распечатать.",
+                         "command", [self._instruction()])
+        if cmd in ("/расширение", "/extension"):
+            extensions = docs.extension_files()
+            if not extensions:
+                return Reply("Расширения на сервере пока нет — спросите администратора помощника.", "command")
+            return Reply(EXTENSION_HELP, "command", extensions)
         if cmd in ("/id", "/ид"):
             return Reply(f"Ваш user_id: {job.user.key}", "command")
         return None
+
+    def _instruction(self) -> Path:
+        return docs.instruction_file(self.settings.data_dir / "docs")
 
     # --- основной путь ---
 
@@ -264,6 +285,8 @@ class Assistant:
             return refuse(f"База «{base.title}» сейчас недоступна ({why}). Откройте базу ярлыком «1С + MCP Toolkit» "
                           "или в обработке MCP Toolkit нажмите «Запустить сервер», и повторите вопрос.")
         last = self.toolkit_checks.get(base.id)
+        if last is not None and last.ok and not onec_toolkit.token_ok(base.toolkit_url, token):
+            last = None         # токен сгенерировали заново — полная проверка скажет об этом
         if last is None or not last.ok or time.time() - last.checked_at > self.TOOLKIT_RECHECK_SECONDS:
             last = onec_toolkit.probe(base.toolkit_url, token)
             self.toolkit_checks[base.id] = last

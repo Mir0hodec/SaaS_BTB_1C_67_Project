@@ -130,9 +130,12 @@ class DevSettings:
     def platform(self) -> str:
         if self.v8_path:
             return self.v8_path
-        root = Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "1cv8"
-        found = sorted(root.glob("8.3.*/bin/1cv8.exe"),
-                       key=lambda p: [int(x) for x in p.parent.parent.name.split(".") if x.isdigit()])
+        # Самая новая 8.3 с конфигуратором (1cv8.exe); при равных версиях — 64-разрядная.
+        roots = [os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"),
+                 os.environ.get("ProgramFiles", "C:/Program Files")]
+        found = sorted((p for root in roots for p in (Path(root) / "1cv8").glob("8.3.*/bin/1cv8.exe")),
+                       key=lambda p: ([int(x) for x in p.parent.parent.name.split(".") if x.isdigit()],
+                                      "x86" not in str(p)))
         return str(found[-1].parent) if found else ""
 
 

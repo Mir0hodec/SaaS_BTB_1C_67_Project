@@ -335,12 +335,19 @@
       <div class="card"><h2>Базы 1С сотрудников <button class="btn sm primary" id="base-add" style="margin-left:auto">${ICON.plus}Добавить базу</button></h2>
         <div class="hint" style="margin-bottom:12px">Сотрудник открывает свою копию базы под «${esc(d.admin_user)}» с паролем 1 и запускает обработку MCP Toolkit (встроенный сервер, порт 6003). Боту базу выбирают хэштегом: «#хэштег почему не проводится документ…».</div>
         <div class="list">${list.length ? list.map(baseRow).join("") : `<div class="empty">${DB_ICON}Баз пока нет — нажмите «Добавить базу»</div>`}</div>
+      </div>
+      <div class="card"><h2>Комплект для сотрудника <span class="hint">бот присылает его по команде /toolkit</span></h2>
+        <div class="kit">${d.kit.length ? d.kit.map(kitChip).join("") : '<span class="chip bad">MCP Toolkit не установлен — выполните scripts\\install_1c_skills.ps1</span>'}
+          <span class="chip ok">Инструкция для сотрудников.html</span>
+          ${d.extensions.map(kitChip).join("")}</div>
+        <div class="hint" style="margin-top:10px">${d.extensions.length ? "Расширение тоже уходит в комплекте; отдельно — команда /расширение." : "Расширения пока нет."} Положите файл расширения (.cfe) в папку <code>${esc(d.extensions_dir)}</code> — бот начнёт присылать его сам, перезапуск не нужен.</div>
       </div>`;
     $("#base-add").onclick = () => baseForm({});
     page.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => baseForm(list.find((x) => x.id === b.dataset.edit)));
     page.querySelectorAll("[data-bcheck]").forEach((b) => b.onclick = () => checkBase(b.dataset.bcheck, b));
     page.querySelectorAll("[data-bdel]").forEach((b) => b.onclick = () => deleteBase(b.dataset.bdel));
   }
+  const kitChip = (f) => `<span class="chip ok" title="${esc(nf.format(Math.ceil(f.size / 1024)))} КБ">${esc(f.name)}</span>`;
   function baseRow(b) {
     const c = b.check;
     const state = !b.toolkit_url ? '<span class="chip">демо, без MCP Toolkit</span>'
@@ -625,6 +632,32 @@
     if (scroll || atBottom) box.scrollTop = box.scrollHeight;
   }
 
+  // --- справка ---
+  const hstate = { doc: "admin" };
+  async function helpPage() {
+    const list = (await api("docs")).docs;
+    if (!list.length) { page.innerHTML = `<div class="card"><div class="empty">Инструкций нет — нет папки docs</div></div>`; return; }
+    if (!list.some((x) => x.id === hstate.doc)) hstate.doc = list[0].id;
+    const d = await api("docs/" + hstate.doc);
+    page.innerHTML = `<div class="card">
+      <div class="toolbar no-print">
+        <div class="seg" id="h-doc">${list.map((x) => `<button data-d="${esc(x.id)}" class="${x.id === hstate.doc ? "on" : ""}">${esc({ employees: "Сотрудникам", admin: "Администратору" }[x.id] || x.title)}</button>`).join("")}</div>
+        <span class="hint grow">${hstate.doc === "employees" ? "Этот же файл бот присылает сотруднику по команде /инструкция и вместе с /toolkit." : "Как вести помощника: сотрудники, базы, аккаунт Claude, неполадки."}</span>
+        <button class="btn sm" id="h-save"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Скачать файл</button>
+        <button class="btn sm" id="h-print"><svg viewBox="0 0 24 24"><path d="M7 9V4h10v5M7 17H5V10h14v7h-2M7 14h10v6H7z"/></svg>Печать</button>
+      </div>
+      <article class="doc">${d.html}</article></div>`;
+    $("#h-doc").querySelectorAll("button").forEach((b) => b.onclick = () => { hstate.doc = b.dataset.d; helpPage(); });
+    $("#h-print").onclick = () => window.print();
+    $("#h-save").onclick = () => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([d.standalone], { type: "text/html;charset=utf-8" }));
+      a.download = d.file_name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    };
+  }
+
   // --- маршрутизация ---
   const PAGES = {
     overview: ["Обзор", "Состояние бота и статистика", overview],
@@ -634,6 +667,7 @@
     checks: ["Проверки", "Проверить связь с Claude, 1С-Коннектом, 1С и базой знаний", checks],
     settings: ["Настройки", "Изменения применяются сразу, перезапуск не нужен", settingsPage],
     logs: ["Логи", "Что бот пишет в журнал работы", logs],
+    help: ["Справка", "Инструкции для сотрудников и для администратора помощника", helpPage],
   };
   let current = "overview";
   async function render() {
