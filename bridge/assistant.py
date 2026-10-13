@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from bridge.access import Base, User, load_bases, load_users, pick_base
+from bridge.access import Base, BaseChoice, User, load_bases, load_users, pick_base
 from bridge import docs, onec_extension, onec_toolkit, toolkit_secrets
 from bridge.answer import clean_answer
 from bridge.claude_runner import ClaudeRunner, RunResult
@@ -29,6 +29,7 @@ from bridge.mcp_config_builder import build_mcp_config, session_disallowed, sess
 from bridge.store import Store, now
 from common.doc_extract import SUPPORTED_EXTENSIONS, extract_text
 from common.doc_index import BuildReport, DocIndex, IndexNotBuiltError
+from common.yaml_edit import YamlEditError, set_value
 
 log = logging.getLogger("bridge")
 INLINE_ATTACHMENT_CHARS = 20_000
@@ -37,6 +38,7 @@ _SAFE_KEY_RE = re.compile(r"[^A-Za-z0-9_-]+")
 HELP = (
     "Я ИИ-помощник ГК «Эксперт». Спрашивайте обычным языком.\n"
     "Вопрос по данным 1С — укажите базу хэштегом: «#демо остатки по кассе на 1 сентября».\n"
+    "Новая база: установите в неё расширение (/расширение) и пришлите мне ссылку на базу — подключу сам.\n"
     "Дальше можно без хэштега: «а теперь по месяцам в Excel» — я помню разговор.\n"
     "Вопросы «как сделать» — ищу в базе знаний компании.\n"
     "Проверка контрагента: «проверь контрагента 750710450345» — долг и неподписанные ЭАВР.\n"
@@ -60,9 +62,14 @@ TOOLKIT_HELP = (
     "Подробно, с ответами на частые проблемы — в файле «Инструкция для сотрудников»."
 )
 EXTENSION_HELP = (
-    "Расширение для копии базы: Все функции → Стандартные → Управление расширениями конфигурации → "
-    "«Добавить из файла» (в конфигурациях на БСП: Администрирование → Печатные формы, отчёты и обработки → "
-    "Расширения). Затем перезапустите 1С."
+    "Как подключить базу через расширение MCP_HTTPService:\n"
+    "1. В базе: Все функции → Стандартные → Управление расширениями конфигурации → «Добавить из файла» "
+    "(в конфигурациях на БСП: Администрирование → Печатные формы, отчёты и обработки → Расширения). "
+    "Снимите «Безопасный режим», перезапустите 1С.\n"
+    "2. У пользователя «Администратор» в этой базе должен быть пароль 1.\n"
+    "3. Пришлите мне ссылку на базу (адрес из браузера) — подключу её сам и отвечу. Если скажу, что "
+    "HTTP-сервис расширения не опубликован, — в публикации базы на веб-сервере нужно включить «Публиковать "
+    "HTTP сервисы расширений по умолчанию» (Конфигуратор → Администрирование → Публикация на веб-сервере)."
 )
 
 
@@ -223,7 +230,18 @@ class Assistant:
                          "limit")
 
         bases = self.bases()
-        choice = pick_base(job.text, bases)
+        linked = self._connect_by_link(job, bases, started)
+        if isinstance(linked, Reply):
+            return linked
+        if linked is not None:
+            bases = self.bases()
+            choice = BaseChoice(base=linked[0], tag=None, text=linked[1])
+            if not choice.text and not job.attachments:
+                # Только ссылка — подтверждаем подключение и остаёмся в этой базе, Claude не запускаем.
+                self.store.session(job.user.key, linked[0].id, self.settings.idle_timeout_minutes, keep_base=False)
+                return Reply(self._connected_text(linked[0]), "command")
+        else:
+            choice = pick_base(job.text, bases)
         if choice.tag and choice.base is None:
             known = ", ".join(f"#{b.tags[1] if len(b.tags) > 1 else b.id}" for b in bases.values()
                               if job.user.can_use(b.id))
@@ -300,6 +318,42 @@ class Assistant:
         if not last.ok:
             return refuse(last.message)
         return None, {toolkit_secrets.env_name(base.id): token}
+
+    def _connect_by_link(self, job: Job, bases: dict[str, Base], started: float) -> tuple[Base, str] | Reply | None:
+        """Ссылка на опубликованную базу в сообщении: уже известная — выбираем её, новая — проверяем
+        расширение MCP_HTTPService и вносим в bases.yaml. Так сотрудник подключает базу сам."""
+        found = onec_extension.find_publication(job.text)
+        if found is None:
+            return None
+        url, rest = found
+        known = next((b for b in bases.values() if b.via_extension and b.url.rstrip("/").lower() == url.lower()), None)
+        if known is not None:
+            return known, rest
+        check = onec_extension.probe(url, timeout=15)
+        if not check.ok:
+            if not onec_extension.looks_like_1c(url):
+                return None             # обычная ссылка в вопросе, не база 1С
+            text = f"Не получилось подключить базу {url}. {check.message}"
+            self._log(job, None, "toolkit", started, error=text)
+            return Reply(text, "toolkit")
+        base_id = onec_extension.base_id_for(url, set(bases))
+        title = f"{check.config or 'База'} ({url.rstrip('/').split('/')[-1]})"
+        try:
+            for key, value in (("title", title), ("tags", [base_id]), ("mode", "extension"), ("url", url),
+                               ("owners", []), ("added_by", job.user.name)):
+                set_value(self.settings.bases_path, (base_id, key), value)
+        except (YamlEditError, OSError) as exc:
+            log.exception("не удалось записать базу %s", url)
+            return Reply(f"База отвечает, но записать её в список не получилось: {exc}", "error")
+        log.info("база %s подключена по ссылке от %s: %s", base_id, job.user.name, url)
+        self.toolkit_checks[base_id] = check
+        return self.bases()[base_id], rest
+
+    def _connected_text(self, base: Base) -> str:
+        check = self.toolkit_checks.get(base.id)
+        about = f" Конфигурация {check.config} {check.version}, {check.detail}." if check and check.ok else ""
+        return (f"Подключил базу «{base.title}».{about} Хэштег: #{base.id}. Спрашивайте — дальше можно без "
+                "хэштега, я помню разговор. Базу я только читаю, данные в ней не меняю.")
 
     def _extension_gate(self, job: Job, base: Base, started: float) -> Reply | None:
         """Опубликованная база с расширением MCP_HTTPService: отвечает ли, пускает ли «Администратор»/«1»."""

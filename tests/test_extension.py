@@ -222,3 +222,40 @@ def test_panel_adds_and_checks_published_base(fake_1c, tmp_path, monkeypatch):
                 break
             job = client.get(f"/panel/api/jobs/{job['id']}", headers=auth).json()
         assert job["state"] == "done" and job["result"]["ok"] and "0.4.8" in job["result"]["detail"]
+
+
+def test_employee_connects_base_by_link(fake_1c, tmp_path):
+    """Сотрудник присылает ссылку — бот сам проверяет расширение, вносит базу и работает в ней."""
+    s = _env(tmp_path, fake_1c)
+    s.bases_path.write_text("", encoding="utf-8")
+    runner = Runner()
+    a = Assistant(s, Store(s.data_dir / "s.sqlite3"), runner=runner)
+    ask = lambda text: a.handle(Job(channel="connect", user=User(key="u1", name="Иван", bases="*"), text=text))  # noqa: E731
+
+    reply = ask(f"{fake_1c}/ru_RU/#e1cib/list")                 # только ссылка: подключить, Claude не нужен
+    assert reply.status == "command" and "Подключил базу" in reply.text and "#base1" in reply.text
+    assert not runner.calls
+    base = load_bases(s.bases_path)["base1"]
+    assert base.via_extension and base.url == fake_1c
+    assert "added_by" in s.bases_path.read_text(encoding="utf-8")
+
+    reply = ask("какие документы есть в конфигурации?")         # без хэштега — в подключённой базе
+    assert reply.status == "ok" and "опубликованная база" in runner.calls[-1]["question"]
+
+    reply = ask(f"{fake_1c} покажи ошибки в журнале")           # та же ссылка ещё раз — та же база
+    assert reply.status == "ok" and list(load_bases(s.bases_path)) == ["base1"]
+
+    Fake1C.published = False
+    reply = ask(fake_1c.replace("/Base1", "/Base2") + " что тут?")
+    assert reply.status == "toolkit" and "HTTP-сервис расширения" in reply.text
+    assert "base2" not in load_bases(s.bases_path)
+
+
+def test_ordinary_link_is_just_a_question(fake_1c, tmp_path):
+    s = _env(tmp_path, fake_1c)
+    runner = Runner()
+    a = Assistant(s, Store(s.data_dir / "s.sqlite3"), runner=runner)
+    reply = a.handle(Job(channel="connect", user=User(key="u1", name="Иван", bases="*"),
+                         text="что пишут тут http://127.0.0.1:9/статья про НДС?"))
+    assert reply.status == "ok" and len(runner.calls) == 1
+    assert "ut_pub" in load_bases(s.bases_path) and len(load_bases(s.bases_path)) == 1
