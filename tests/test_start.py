@@ -62,3 +62,13 @@ def test_webhook_token_generated_once(monkeypatch, tmp_path):
     assert len(token) >= 40
     start.ensure_webhook_token("CONNECT_WEBHOOK_TOKEN")      # уже есть — второй раз не пишет
     assert (tmp_path / ".env").read_text(encoding="utf-8").count("CONNECT_WEBHOOK_TOKEN") == 1
+
+
+def test_line_setup_xml():
+    import connect_line_setup as ls
+    assert ls._prop("ServiceUsersAudience", "string", "FORSPECIALISTS").endswith(
+        '<Value xsi:type="xs:string">FORSPECIALISTS</Value></Property>')
+    assert '<Value xsi:type="xs:boolean">false</Value>' in ls._prop("OfferServiceForClients", "boolean", False)
+    table = ls._table([("ServiceUserID", "string"), ("ServiceID", "string")], [["u1", "l1"], ["u2", "l1"]])
+    assert table.count("<d:row>") == 2 and "<d:Name>ServiceUserID</d:Name>" in table
+    assert "&lt;" in ls._prop("Name", "string", "<x>")

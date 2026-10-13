@@ -20,7 +20,7 @@ connect:
   api_login_env: "CONNECT_API_LOGIN"
   api_password_env: "CONNECT_API_PASSWORD"
   webhook_token_env: "CONNECT_WEBHOOK_TOKEN"   # генерируется сам при первом запуске
-  line_id: ""                   # пусто — берётся из CONNECT_LINE_ID
+  line_id: ""                   # своя линия «ИИ-помощник» — заполняет scripts/connect_line_setup.py
   bot_specialist_id: ""         # пусто — берётся из CONNECT_BOT_SPECIALIST_ID
   webhook_mode: "tunnel"        # только channel: line. tunnel — HTTPS через Cloudflare без домена и сертификата
   public_url: ""                # только для webhook_mode: url

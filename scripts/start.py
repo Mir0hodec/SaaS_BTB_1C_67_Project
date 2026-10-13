@@ -166,14 +166,15 @@ def main() -> int:
     tunnel = None
     if colleague:
         say("личные сообщения: опрос истории 1С-Коннекта (см. logs/bridge.log)")
-    line_retry_at = 0.0
+    line_retry_at, url_hooked = 0.0, False
     while True:
-        if settings.connect.line_enabled and mode == "tunnel" and tunnel is None and time.monotonic() >= line_retry_at:
-            tunnel = connect_line(settings, mode)      # своя линия — вебхук; без неё SetHook не вызывается
+        if tunnel is None and not url_hooked and time.monotonic() >= line_retry_at:
+            # Линию могли вписать в settings.yaml после запуска — перечитываем, перезапуск не нужен.
+            settings = Settings.load()
+            if settings.connect.line_enabled:      # своя линия — вебхук; без неё SetHook не вызывается
+                tunnel = connect_line(settings, mode)
+                url_hooked = mode == "url"
             line_retry_at = time.monotonic() + 300
-        elif settings.connect.line_enabled and mode == "url" and line_retry_at == 0.0:
-            connect_line(settings, mode)
-            line_retry_at = 1.0
         time.sleep(5)
         if bridge.poll() is not None:
             say("мост остановился — перезапуск")
