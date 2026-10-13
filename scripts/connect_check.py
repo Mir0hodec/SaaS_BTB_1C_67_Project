@@ -4,6 +4,8 @@
     python scripts/connect_check.py send <UUID_сотрудника> [текст]   # личное сообщение от бота
     python scripts/connect_check.py inbound <UUID_сотрудника> [текст] # входящее → локальный мост
     python scripts/connect_check.py pipe [секунд]            # что приходит из 1С-Коннект (приложение)
+    python scripts/connect_check.py history-probe [all|to-bot|from-bot] [часов]  # сколько чатов отдаёт
+                                                       # один вызов истории (только счётчики)
 
 Пароль и заголовок Authorization не печатаются.
 """
@@ -103,9 +105,50 @@ def pipe(s: Settings, seconds: int) -> int:
     return 0 if got else 1
 
 
+def history_probe(s: Settings, variant: str, hours: float) -> int:
+    """Отдаёт ли GetHistoryOfColleaguesChat несколько чатов за один вызов (по документации
+    обязателен только PeriodFrom). Печатает только коды и счётчики — не текст переписки."""
+    import base64
+    import io
+    import re
+    import zipfile
+    from datetime import timedelta
+
+    from bridge import connect_history as ch
+
+    cs, bot = s.connect, s.connect.bot_specialist_id
+    now = datetime.now()
+    props = (ch._prop("PeriodFrom", "dateTime", (now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S"))
+             + ch._prop("PeriodTo", "dateTime", now.strftime("%Y-%m-%dT%H:%M:%S")))
+    if variant == "to-bot":
+        props += ch._prop("Specialist2ID", "string", bot)
+    elif variant == "from-bot":
+        props += ch._prop("Specialist1ID", "string", bot)
+    body = ('<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+            ' xmlns:par="http://buhphone.com/PartnerWebAPI2" xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+            ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><soap:Body>'
+            f'<par:GetHistoryOfColleaguesChat><par:Params>{props}</par:Params>'
+            '</par:GetHistoryOfColleaguesChat></soap:Body></soap:Envelope>').encode()
+    r = requests.post(ch.SOAP_URL, data=body, auth=(cs.login, cs.password), timeout=120,
+                      headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": f'"{ch.SOAP_ACTION}"'})
+    print(f"вариант {variant}, окно {hours} ч → HTTP {r.status_code}")
+    code = re.findall(r'name="ResultCode"[^>]*>\s*<Value[^>]*>([^<]*)', r.text)
+    data = re.findall(r'name="ResultData"[^>]*>\s*<Value[^>]*>([^<]{0,160})', r.text)
+    print("ResultCode:", code, "ResultData:", data[:1])
+    files = []
+    for blob in re.findall(r'name="HistoryOfChatHtml"[^>]*>\s*<Value[^>]*>([^<]+)', r.text):
+        files += zipfile.ZipFile(io.BytesIO(base64.b64decode(blob))).namelist()
+    pairs = {re.sub(r"_\d{4}-\d{2}-\d{2}\.html$", "", f.split("/")[-1]) for f in files if f.endswith(".html")}
+    print(f"файлов: {len(files)}, пар собеседников: {len(pairs)}, из них с ботом: "
+          f"{sum(1 for p in pairs if bot and bot in p)}")
+    return 0
+
+
 def main() -> int:
     s = Settings.load()
     args = sys.argv[1:]
+    if args[:1] == ["history-probe"]:
+        return history_probe(s, args[1] if len(args) > 1 else "all", float(args[2]) if len(args) > 2 else 3)
     if args[:1] == ["auth"]:
         return auth(s)
     if args[:1] == ["send"] and len(args) >= 2:
