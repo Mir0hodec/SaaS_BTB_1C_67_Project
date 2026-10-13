@@ -379,10 +379,12 @@
     btn.disabled = true;
     box.innerHTML = `<div class="check-res" style="margin-top:10px"><div class="row"><div class="spinner" style="width:18px;height:18px;border-width:2px"></div>Подключаюсь к базе…</div></div>`;
     try {
-      const r = await waitJob(await api(`bases/${id}/check`, { method: "POST" }));
-      box.innerHTML = baseCheck({ ...r, at: new Date().toISOString() });
-    } catch (e) { box.innerHTML = `<div class="check-res bad" style="margin-top:10px">${esc(e.message)}</div>`; }
-    btn.disabled = false;
+      await waitJob(await api(`bases/${id}/check`, { method: "POST" }));
+      if (current === "bases") await basesPage();   // значок состояния и итог — из той же проверки на сервере
+    } catch (e) {
+      box.innerHTML = `<div class="check-res bad" style="margin-top:10px">${esc(e.message)}</div>`;
+      btn.disabled = false;
+    }
   }
   async function deleteBase(id) {
     if (!(await confirmBox("Удалить базу из списка?", `База «${id}» исчезнет из списка, её токен будет удалён. Сама база 1С не меняется.`, "Удалить", true))) return;
