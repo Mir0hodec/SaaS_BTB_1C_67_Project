@@ -3,6 +3,7 @@
   const TOKEN = document.querySelector('meta[name="panel-token"]').content;
   const $ = (s, el = document) => el.querySelector(s);
   const page = $("#page");
+  page.textContent = "";        // подсказка для Internet Explorer — в нормальном браузере не нужна
   const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const nf = new Intl.NumberFormat("ru-RU");
   const money = (v) => v == null ? "—" : "$" + (v < 1 ? v.toFixed(3) : v.toFixed(2)).replace(".", ",");
