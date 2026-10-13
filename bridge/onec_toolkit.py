@@ -28,8 +28,8 @@ from urllib.parse import urlsplit
 import anyio
 import requests
 
-ADMIN_USER = "Администратор"
-ADMIN_PASSWORD = "1"
+from common.onec_login import ADMIN_PASSWORD, ADMIN_USER  # noqa: F401 — «Администратор» / «1»
+
 PASSWORD_FINGERPRINT = base64.b64encode(hashlib.sha1(ADMIN_PASSWORD.encode()).digest()).decode()
 
 # Инструменты MCP Toolkit, которые получает бот. restart/close_1c_session — нет:
@@ -76,6 +76,7 @@ class ProbeResult:
     version: str = ""
     tools: list[str] = field(default_factory=list)
     checked_at: float = field(default_factory=time.time)
+    detail: str = ""               # для баз с расширением: версия расширения и платформы
 
 
 def token_ok(mcp_url: str, token: str, timeout: float = 5.0) -> bool:

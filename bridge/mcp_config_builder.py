@@ -14,6 +14,7 @@ from bridge.onec_toolkit import READ_TOOLS as TOOLKIT_READ_TOOLS, WRITE_TOOLS as
 from bridge.toolkit_secrets import env_name
 
 ONEC_TOOLS = ["get_metadata", "run_query", "export_query_to_excel", "search_code"]
+EXTENSION_TOOLS = ["get_event_log", "get_form_structure"]   # только у баз с расширением MCP_HTTPService
 KB_TOOLS = ["search_knowledge_base", "read_knowledge_base_document", "list_knowledge_base_documents"]
 FILES_TOOLS = ["create_excel", "create_word", "list_attachments", "view_attachment"]
 COUNTERPARTY_TOOLS = ["check_counterparty"]
@@ -104,7 +105,8 @@ def allowed_tools(base_id: str | None, counterparty: bool = False, onec_code: bo
         names = TOOLKIT_READ_TOOLS + (TOOLKIT_WRITE_TOOLS if base.write else [])
         tools += [f"mcp__onec__{t}" for t in names]
     elif base_id:
-        tools += [f"mcp__onec__{t}" for t in ONEC_TOOLS]
+        names = ONEC_TOOLS + (EXTENSION_TOOLS if base is not None and base.via_extension else [])
+        tools += [f"mcp__onec__{t}" for t in names]
     if counterparty:
         tools += [f"mcp__counterparty__{t}" for t in COUNTERPARTY_TOOLS]
     if dev:

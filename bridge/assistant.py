@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from bridge.access import Base, User, load_bases, load_users, pick_base
-from bridge import docs, onec_toolkit, toolkit_secrets
+from bridge import docs, onec_extension, onec_toolkit, toolkit_secrets
 from bridge.answer import clean_answer
 from bridge.claude_runner import ClaudeRunner, RunResult
 from bridge.config import REPO_ROOT, Settings
@@ -243,6 +243,10 @@ class Assistant:
             refusal, extra_env = self._toolkit_gate(job, base, started)
             if refusal:
                 return refusal
+        elif base is not None and base.via_extension:
+            refusal = self._extension_gate(job, base, started)
+            if refusal:
+                return refusal
         if job.on_start:
             job.on_start()
         self.refresh_knowledge_base()
@@ -297,15 +301,34 @@ class Assistant:
             return refuse(last.message)
         return None, {toolkit_secrets.env_name(base.id): token}
 
+    def _extension_gate(self, job: Job, base: Base, started: float) -> Reply | None:
+        """Опубликованная база с расширением MCP_HTTPService: отвечает ли, пускает ли «Администратор»/«1»."""
+        def refuse(text: str, status: str = "toolkit") -> Reply:
+            self._log(job, base.id, status, started, error=text)
+            return Reply(text, status)
+
+        if not base.allowed_for(job.user.key):
+            return refuse(f"База «{base.title}» закреплена за другим сотрудником.", "denied")
+        last = self.toolkit_checks.get(base.id)
+        if last is None or not last.ok or time.time() - last.checked_at > self.TOOLKIT_RECHECK_SECONDS:
+            last = onec_extension.probe(base.url)
+            self.toolkit_checks[base.id] = last
+        if not last.ok:
+            return refuse(f"База «{base.title}» сейчас недоступна. {last.message}")
+        return None
+
     def _compose(self, user: User, base: Base | None, question: str, attachments: list[Path]) -> str:
         parts = [f"Сотрудник: {user.name}",
                  f"База 1С: {base.title}" if base else "База 1С не выбрана (только база знаний).",
                  "", "Вопрос:", question or "(без текста — см. вложения)"]
-        check = self.toolkit_checks.get(base.id) if base is not None and base.via_toolkit else None
-        if check is not None:
+        check = self.toolkit_checks.get(base.id) if base is not None else None
+        if check is not None and base.via_toolkit:
             parts[2:2] = [f"Подключение: MCP Toolkit {base.toolkit_url}, пользователь {check.user}, конфигурация "
                           f"{check.config_title or check.config} {check.version}. "
                           + ("Запись в базу разрешена (execute_code)." if base.write else "Только чтение.")]
+        elif check is not None and base.via_extension:
+            parts[2:2] = [f"Подключение: опубликованная база {base.url}, {check.detail}, конфигурация "
+                          f"{check.config} {check.version}. Только чтение: менять данные в этой базе нельзя."]
         for p in attachments:
             parts.append("")
             if p.suffix.lower() in SUPPORTED_EXTENSIONS:

@@ -19,6 +19,7 @@ import json
 import os
 import random
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
@@ -26,6 +27,11 @@ from typing import Protocol
 import requests
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from common.onec_login import ADMIN_PASSWORD, ADMIN_USER  # noqa: E402
+
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
@@ -60,6 +66,95 @@ class OneCHttpClient:
 
     def validate_query(self, query_text: str) -> dict:
         return self._call("POST", "/query", json={"query": query_text, "params": {}, "validate_only": True})
+
+
+EXTENSION_SERVICE = "/hs/mcp-1c"
+EXTENSION_NOT_PUBLISHED = (
+    "В базе не отвечает HTTP-сервис расширения MCP_HTTPService (/hs/mcp-1c). Нужно: установить расширение "
+    "в базу (Все функции → Стандартные → Управление расширениями конфигурации, без безопасного режима) и "
+    "опубликовать HTTP-сервисы расширений (Конфигуратор → Публикация на веб-сервере → «Публиковать HTTP "
+    "сервисы расширений по умолчанию»).")
+EXTENSION_WRONG_PASSWORD = ("Пароль «1» не подходит для пользователя «Администратор» в этой базе. Проверьте, что у "
+                            "пользователя Администратор поставлен пароль 1.")
+# «Документ.Имя» → тип в адресе /object/{type}/{name}
+EXTENSION_TYPES = {
+    "Справочник": "Catalog", "Документ": "Document", "Перечисление": "Enum", "Обработка": "DataProcessor",
+    "Отчет": "Report", "Отчёт": "Report", "РегистрСведений": "InformationRegister",
+    "РегистрНакопления": "AccumulationRegister", "РегистрБухгалтерии": "AccountingRegister",
+    "РегистрРасчета": "CalculationRegister", "ПланСчетов": "ChartOfAccounts",
+    "ПланВидовХарактеристик": "ChartOfCharacteristicTypes", "ПланВидовРасчета": "ChartOfCalculationTypes",
+    "ПланОбмена": "ExchangePlan", "БизнесПроцесс": "BusinessProcess", "Задача": "Task",
+    "ОпределяемыйТип": "DefinedType", "Подсистема": "Subsystem",
+}
+EXTENSION_QUERY_LIMIT = 1000        # больше строк за один запрос расширение не отдаёт
+
+
+class OneCExtensionClient:
+    """Опубликованная база с расширением MCP_HTTPService (HTTP-сервис mcp-1c, только чтение).
+
+    Контракт — модуль расширения: GET /metadata, /object/{type}/{name}, /form/{type}/{name},
+    /configuration, /version; POST /query {query, parameters, limit}, /validate-query {query},
+    /eventlog {start_date, end_date, level, event, user, limit}. Ошибки — {"error": "..."}.
+    Расширение само отклоняет всё, кроме ВЫБРАТЬ; записи в нём нет.
+    """
+
+    def __init__(self, base_url: str, auth: tuple[str, str], timeout: float = 120):
+        self.base_url = base_url.rstrip("/")
+        self.auth = (auth[0].encode("utf-8"), auth[1].encode("utf-8"))   # кириллица в Basic — в UTF-8
+        self.timeout = timeout
+
+    def _call(self, method: str, path: str, **kwargs):
+        try:
+            r = requests.request(method, f"{self.base_url}{EXTENSION_SERVICE}{path}", auth=self.auth,
+                                 timeout=self.timeout, **kwargs)
+        except requests.RequestException as exc:
+            raise OneCError(f"Нет связи с базой {self.base_url}: {type(exc).__name__}") from None
+        if r.status_code == 401:
+            raise OneCError(EXTENSION_WRONG_PASSWORD)
+        if "json" not in (r.headers.get("content-type") or ""):
+            if r.status_code == 404:
+                raise OneCError(EXTENSION_NOT_PUBLISHED)
+            raise OneCError(f"База ответила HTTP {r.status_code} не в формате JSON")
+        data = r.json()
+        if r.status_code >= 400:
+            error = data.get("error") if isinstance(data, dict) else None
+            raise OneCError(f"1С: {error or r.text[:300]}")
+        return data
+
+    def version(self) -> str:
+        return str(self._call("GET", "/version").get("version", ""))
+
+    def configuration(self) -> dict:
+        return self._call("GET", "/configuration")
+
+    def get_metadata(self, object_name: str | None = None) -> dict:
+        if not object_name:
+            return {"objects": self._call("GET", "/metadata")}
+        return self._call("GET", self._object_path("/object", object_name))
+
+    def get_form(self, object_name: str) -> dict:
+        return self._call("GET", self._object_path("/form", object_name))
+
+    @staticmethod
+    def _object_path(prefix: str, object_name: str) -> str:
+        kind, _, name = object_name.strip().partition(".")
+        if not name:
+            raise OneCError("Объект указывается как «Вид.Имя», например «Документ.РеализацияТоваровУслуг»")
+        kind = EXTENSION_TYPES.get(kind, kind)
+        return f"{prefix}/{requests.utils.quote(kind)}/{requests.utils.quote(name)}"
+
+    def run_query(self, query_text: str, params: dict | None = None) -> dict:
+        data = self._call("POST", "/query", json={"query": query_text, "parameters": params or {},
+                                                  "limit": EXTENSION_QUERY_LIMIT})
+        return {"columns": data.get("columns", []), "rows": data.get("rows", []),
+                "truncated": bool(data.get("truncated"))}
+
+    def validate_query(self, query_text: str) -> dict:
+        data = self._call("POST", "/validate-query", json={"query": query_text})
+        return {"ok": bool(data.get("valid")), "error": "; ".join(str(e) for e in data.get("errors") or [])}
+
+    def get_event_log(self, **filters) -> dict:
+        return self._call("POST", "/eventlog", json={k: v for k, v in filters.items() if v not in (None, "", [])})
 
 
 class MockOneCClient:
@@ -122,6 +217,9 @@ def build_client(base: dict) -> OneCClient:
         if base.get("auth_user"):
             auth = (_expand_env(base["auth_user"]), _expand_env(base.get("auth_password", "")))
         return OneCHttpClient(_expand_env(base["url"]), auth=auth)
+    if mode == "extension":
+        # Других учёток не бывает: только «Администратор» / «1» (common/onec_login.py).
+        return OneCExtensionClient(str(base["url"]), auth=(ADMIN_USER, ADMIN_PASSWORD))
     if mode == "mock":
         return MockOneCClient(_repo_path(base["fixtures_dir"]))
     raise OneCError(f"Неизвестный режим базы: {mode}")

@@ -334,7 +334,7 @@
     const list = d.bases;
     page.innerHTML = `
       <div class="card"><h2>Базы 1С сотрудников <button class="btn sm primary" id="base-add" style="margin-left:auto">${ICON.plus}Добавить базу</button></h2>
-        <div class="hint" style="margin-bottom:12px">Сотрудник открывает свою копию базы под «${esc(d.admin_user)}» с паролем 1 и запускает обработку MCP Toolkit (встроенный сервер, порт 6003). Боту базу выбирают хэштегом: «#хэштег почему не проводится документ…».</div>
+        <div class="hint" style="margin-bottom:12px">Два вида баз: <b>копия на ПК сотрудника</b> с обработкой MCP Toolkit — бот читает и может исправлять данные; <b>опубликованная база</b> с расширением MCP_HTTPService — только чтение. Бот всегда входит под «${esc(d.admin_user)}» с паролем 1. Базу выбирают хэштегом: «#хэштег почему не проводится документ…».</div>
         <div class="list">${list.length ? list.map(baseRow).join("") : `<div class="empty">${DB_ICON}Баз пока нет — нажмите «Добавить базу»</div>`}</div>
       </div>
       <div class="card"><h2>Комплект для сотрудника <span class="hint">бот присылает его по команде /toolkit</span></h2>
@@ -351,26 +351,28 @@
   const kitChip = (f) => `<span class="chip ok" title="${esc(nf.format(Math.ceil(f.size / 1024)))} КБ">${esc(f.name)}</span>`;
   function baseRow(b) {
     const c = b.check;
-    const state = !b.toolkit_url ? '<span class="chip">демо, без MCP Toolkit</span>'
-      : !b.token_set ? '<span class="chip warn">нет токена</span>'
+    const live = b.kind === "toolkit" || b.kind === "extension";
+    const state = !live ? '<span class="chip">демо-база</span>'
+      : b.kind === "toolkit" && !b.token_set ? '<span class="chip warn">нет токена</span>'
       : !c ? '<span class="chip">не проверялась</span>'
       : c.ok ? '<span class="chip ok">работает</span>' : '<span class="chip bad">ошибка</span>';
-    const extra = [b.toolkit_url || b.id];
-    if (b.toolkit_url) extra.push(b.write ? "запись разрешена" : "только чтение");
+    const extra = [b.toolkit_url || b.url || b.id];
+    if (b.kind === "toolkit") extra.push(b.write ? "запись разрешена" : "только чтение");
+    if (b.kind === "extension") extra.push("опубликованная база, только чтение");
     if (b.owners.length) extra.push(b.owners.map((o) => o.name).join(", "));
     return `<div class="item"><div class="row">
         <div class="avatar" style="background:var(--accent-soft);color:var(--accent)">${DB_ICON}</div>
         <div class="grow"><div class="ellipsis"><b>${esc(b.title)}</b> <span class="muted">${b.tags.map((t) => "#" + esc(t)).join(" ")}</span></div>
           <div class="hint ellipsis">${esc(extra.join(" · "))}</div></div>
         ${state}
-        ${b.toolkit_url ? `<button class="btn sm" data-bcheck="${esc(b.id)}">Проверить</button>` : ""}
+        ${live ? `<button class="btn sm" data-bcheck="${esc(b.id)}">Проверить</button>` : ""}
         <button class="icon-btn" title="Изменить" data-edit="${esc(b.id)}"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg></button>
         <button class="icon-btn" title="Удалить" data-bdel="${esc(b.id)}">${ICON.x}</button></div>
       <div id="bres-${esc(b.id)}">${c ? baseCheck(c) : ""}</div></div>`;
   }
   function baseCheck(c) {
     const body = c.ok
-      ? `<b>Подключено:</b> ${esc(c.config)} ${esc(c.version)} · пользователь ${esc(c.user)} · инструментов: ${c.tools}`
+      ? `<b>Подключено:</b> ${esc(c.config)} ${esc(c.version)} · пользователь ${esc(c.user)} · ${c.detail ? esc(c.detail) : "инструментов: " + c.tools}`
       : `<b>Не работает.</b> ${esc(c.message)}`;
     const when_ = c.at ? `<span class="hint" style="float:right">${esc(ago(c.at))}</span>` : "";
     return `<div class="check-res ${c.ok ? "ok" : "bad"}" style="margin-top:10px">${when_}${body}</div>`;
@@ -393,15 +395,22 @@
   }
   function baseForm(b) {
     const isNew = !b.id;
+    let kind = b.kind === "extension" ? "extension" : "toolkit";
     const owners = (b.owners || []).map((o) => ({ ...o }));
     const tokenHint = b.token_set ? "задан — оставьте пустым, чтобы не менять" : "из поля «Токен доступа» в форме MCP Toolkit";
     drawer(`<h3>${isNew ? "Новая база" : "База «" + esc(b.title) + "»"}</h3>
       <div class="field" style="margin-top:16px"><label for="bf-title">Название</label><input type="text" id="bf-title" value="${esc(b.title || "")}" placeholder="ГКЭ у Ивана Бубнова"></div>
       <div class="field"><label for="bf-id">Код базы</label><input type="text" id="bf-id" value="${esc(b.id || "")}" ${isNew ? "" : "disabled"} placeholder="gke_ivan — латиница, цифры, _"></div>
       <div class="field"><label for="bf-tags">Хэштеги</label><input type="text" id="bf-tags" value="${esc((b.tags || []).join(", "))}" placeholder="гке, гкеиван"><div class="hint">По ним сотрудник выбирает базу в вопросе: «#гке …»</div></div>
+      ${isNew ? `<div class="field"><label>Как подключена база</label><div class="seg" id="bf-kind"><button data-k="toolkit" class="on">Копия на ПК сотрудника (MCP Toolkit)</button><button data-k="extension">Опубликованная база (расширение)</button></div></div>` : ""}
+      <div id="bf-ext" hidden>
+        <div class="field"><label for="bf-pub">Адрес публикации базы</label><input type="text" id="bf-pub" value="${esc(b.url || "")}" placeholder="http://сервер/ИмяБазы"><div class="hint">В базе установлено расширение MCP_HTTPService, на веб-сервере опубликованы HTTP-сервисы расширений. Бот входит под «Администратор» с паролем 1 и только читает: метаданные, данные, журнал регистрации, формы.</div></div>
+      </div>
+      <div id="bf-tk">
       <div class="field"><label for="bf-url">Адрес MCP Toolkit</label><input type="text" id="bf-url" value="${esc(b.toolkit_url || "")}" placeholder="http://192.168.0.51:6003/mcp"><div class="hint">IP компьютера сотрудника и порт из формы MCP Toolkit</div></div>
       <div class="field"><label for="bf-token">Токен MCP Toolkit</label><input type="password" id="bf-token" autocomplete="new-password" placeholder="${esc(tokenHint)}"></div>
       <div class="field"><label class="row" style="gap:8px"><input type="checkbox" id="bf-write" ${b.write ? "checked" : ""}> Разрешить боту изменять данные в базе</label><div class="hint">Без подтверждения. Сотрудник ставит в MCP Toolkit галочку «Записать» (блок «Автоматически разрешать операции»). Удаление объектов MCP Toolkit блокирует всегда.</div></div>
+      </div>
       <div class="field"><label>Кто может работать с базой</label><div id="bf-owners"></div>
         <div class="search" style="margin-top:6px"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg><input type="search" id="bf-q" placeholder="Добавить сотрудника — фамилия"></div>
         <div class="list" id="bf-found"></div><div class="hint">Пусто — все, кому отвечает бот.</div></div>
@@ -413,6 +422,13 @@
       $("#bf-owners").querySelectorAll("[data-orm]").forEach((a) => a.onclick = (e) => { e.preventDefault(); owners.splice(+a.dataset.orm, 1); drawOwners(); });
     };
     drawOwners();
+    const showKind = () => {
+      $("#bf-ext").hidden = kind !== "extension";
+      $("#bf-tk").hidden = kind === "extension";
+      document.querySelectorAll("#bf-kind button").forEach((x) => x.classList.toggle("on", x.dataset.k === kind));
+    };
+    document.querySelectorAll("#bf-kind button").forEach((x) => x.onclick = () => { kind = x.dataset.k; showKind(); });
+    showKind();
     let timer;
     $("#bf-q").oninput = (e) => {
       clearTimeout(timer);
@@ -429,6 +445,7 @@
     };
     $("#bf-save").onclick = async () => {
       const body = { id: $("#bf-id").value.trim(), title: $("#bf-title").value.trim(), tags: $("#bf-tags").value,
+        kind, url: $("#bf-pub").value.trim(),
         toolkit_url: $("#bf-url").value.trim(), token: $("#bf-token").value, write: $("#bf-write").checked,
         owners: owners.map((o) => o.id) };
       try { await api("bases", { method: "POST", body }); $("#drawer").hidden = true; toast("База сохранена — нажмите «Проверить»"); basesPage(); }

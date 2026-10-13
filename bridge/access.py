@@ -31,10 +31,16 @@ class Base:
     toolkit_url: str = ""            # MCP Toolkit на ПК сотрудника: http://<IP>:6003/mcp
     owners: tuple[str, ...] = ()     # кто может выбирать базу; пусто — все, кому открыта по users.yaml
     write: bool = False              # можно ли боту писать в базу (execute_code)
+    mode: str = ""                   # mock | http | extension (опубликованная база с расширением MCP_HTTPService)
+    url: str = ""                    # адрес публикации базы — для http и extension
 
     @property
     def via_toolkit(self) -> bool:
         return bool(self.toolkit_url)
+
+    @property
+    def via_extension(self) -> bool:
+        return self.mode == "extension" and not self.toolkit_url
 
     def allowed_for(self, user_key: str) -> bool:
         return not self.owners or user_key.lower() in self.owners
@@ -84,7 +90,8 @@ def load_bases(path: Path) -> dict[str, Base]:
         bases[base_id] = Base(id=base_id, title=b.get("title", base_id), tags=tags,
                               toolkit_url=str(b.get("toolkit_url") or "").strip(),
                               owners=tuple(str(o).lower() for o in b.get("owners") or []),
-                              write=bool(b.get("write", False)))
+                              write=bool(b.get("write", False)), mode=str(b.get("mode") or "").strip(),
+                              url=str(b.get("url") or "").strip())
     return bases
 
 

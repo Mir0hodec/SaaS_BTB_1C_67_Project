@@ -32,7 +32,7 @@ import yaml
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
-from bridge import docs, onec_toolkit, toolkit_secrets
+from bridge import docs, onec_extension, onec_toolkit, toolkit_secrets
 from bridge.access import load_bases
 from bridge.config import REPO_ROOT, Settings
 from bridge.connect_directory import Directory, DirectoryError
@@ -51,6 +51,7 @@ MODELS = {
 EFFORTS = ["low", "medium", "high", "max"]
 BASE_ID_RE = re.compile(r"^[a-z0-9_]{2,40}$")
 TOOLKIT_URL_RE = re.compile(r"^https?://[A-Za-z0-9.\-]+(:\d{1,5})?/mcp/?$")
+PUBLICATION_URL_RE = re.compile(r"^https?://[A-Za-z0-9.\-]+(:\d{1,5})?(/[A-Za-z0-9_.\-%]+)*/?$")
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 PROXY_HEADERS = ("x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded", "cf-connecting-ip", "cf-ray")
 STATUS_GROUPS = {"ok": ["ok"], "error": ["error", "send_error"], "limit": ["limit"],
@@ -535,6 +536,11 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
 
     # --- базы 1С (MCP Toolkit на ПК сотрудников) ---
 
+    def check_view(check: onec_toolkit.ProbeResult) -> dict:
+        return {"ok": check.ok, "message": check.message, "user": check.user,
+                "config": check.config_title or check.config, "version": check.version, "tools": len(check.tools),
+                "detail": check.detail, "at": datetime.fromtimestamp(check.checked_at, timezone.utc).isoformat()}
+
     def bases_view() -> list[dict]:
         try:
             bases = load_bases(settings.bases_path)
@@ -544,14 +550,13 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
         out = []
         for b in bases.values():
             check = assistant.toolkit_checks.get(b.id)
+            kind = "toolkit" if b.via_toolkit else "extension" if b.via_extension else "demo"
             out.append({
                 "id": b.id, "title": b.title, "tags": [t for t in b.tags if t != b.id], "toolkit_url": b.toolkit_url,
+                "kind": kind, "url": b.url if b.via_extension else "",
                 "write": b.write, "token_set": b.id in tokens,
                 "owners": [{"id": o, "name": name_of(o)} for o in b.owners],
-                "check": None if check is None else {
-                    "ok": check.ok, "message": check.message, "user": check.user, "config": check.config_title
-                    or check.config, "version": check.version, "tools": len(check.tools),
-                    "at": datetime.fromtimestamp(check.checked_at, timezone.utc).isoformat()},
+                "check": None if check is None else check_view(check),
             })
         return out
 
@@ -586,17 +591,25 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
         if not BASE_ID_RE.match(base_id):
             raise HTTPException(400, "код базы — латиница, цифры и _, от 2 до 40 символов (например gke_ivan)")
         title = str(body.get("title") or "").strip()
-        url = str(body.get("toolkit_url") or "").strip()
         if not title:
             raise HTTPException(400, "укажите название базы")
-        if not TOOLKIT_URL_RE.match(url):
-            raise HTTPException(400, "адрес MCP Toolkit вида http://192.168.0.51:6003/mcp")
         tags = [t.strip().lstrip("#").lower() for t in str(body.get("tags") or "").replace(";", ",").split(",")
                 if t.strip().lstrip("#")]
         owners = [str(o).lower() for o in body.get("owners") or [] if UUID_RE.match(str(o).lower())]
+        if body.get("kind") == "extension":
+            # Опубликованная база с расширением MCP_HTTPService: адрес публикации, без токена, только чтение.
+            url = re.sub(r"/hs/mcp-1c(/.*)?$", "", str(body.get("url") or "").strip()).rstrip("/")
+            if not PUBLICATION_URL_RE.match(url):
+                raise HTTPException(400, "адрес публикации базы вида http://сервер/ИмяБазы")
+            fields = (("title", title), ("tags", tags), ("mode", "extension"), ("url", url), ("owners", owners))
+        else:
+            url = str(body.get("toolkit_url") or "").strip()
+            if not TOOLKIT_URL_RE.match(url):
+                raise HTTPException(400, "адрес MCP Toolkit вида http://192.168.0.51:6003/mcp")
+            fields = (("title", title), ("tags", tags), ("toolkit_url", url), ("owners", owners),
+                      ("write", bool(body.get("write"))))
         try:
-            for key, value in (("title", title), ("tags", tags), ("toolkit_url", url), ("owners", owners),
-                               ("write", bool(body.get("write")))):
+            for key, value in fields:
                 set_value(settings.bases_path, (base_id, key), value)
         except YamlEditError as exc:
             raise HTTPException(500, str(exc)) from None
@@ -624,17 +637,16 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
     def check_base(base_id: str, request: Request) -> dict:
         guard(request, api=True)
         base = load_bases(settings.bases_path).get(base_id)
-        if base is None or not base.via_toolkit:
-            raise HTTPException(404, "нет такой базы с MCP Toolkit")
-        token = toolkit_secrets.get_token(base_id)
-        if not token:
+        if base is None or not (base.via_toolkit or base.via_extension):
+            raise HTTPException(404, "нет такой базы с MCP Toolkit или расширением")
+        token = toolkit_secrets.get_token(base_id) if base.via_toolkit else ""
+        if base.via_toolkit and not token:
             raise HTTPException(400, "сначала задайте токен MCP Toolkit")
 
         def do() -> dict:
-            res = onec_toolkit.probe(base.toolkit_url, token)
+            res = onec_toolkit.probe(base.toolkit_url, token) if base.via_toolkit else onec_extension.probe(base.url)
             assistant.toolkit_checks[base_id] = res
-            return {"ok": res.ok, "message": res.message, "user": res.user, "config": res.config_title or res.config,
-                    "version": res.version, "tools": len(res.tools)}
+            return check_view(res)
         return run_job("base", do)
 
     @r.get("/panel/api/jobs/{job_id}")

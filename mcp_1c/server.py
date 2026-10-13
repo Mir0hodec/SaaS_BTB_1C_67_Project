@@ -34,9 +34,12 @@ _bases = yaml.safe_load(Path(os.environ.get("BASES_CONFIG_PATH", REPO_ROOT / "co
 BASE = _bases.get(BASE_ID)
 OUTBOX = Path(os.environ["OUTBOX_DIR"]) if os.environ.get("OUTBOX_DIR") else None
 
+EXTENSION = (BASE or {}).get("mode") == "extension"   # опубликованная база с расширением MCP_HTTPService
+
 mcp = MCPServer(name="onec", instructions=(
     f"База 1С «{(BASE or {}).get('title', BASE_ID)}». Только чтение: метаданные, запросы, "
-    "выгрузка в Excel, поиск по коду конфигурации."
+    "выгрузка в Excel, поиск по коду конфигурации"
+    + (", журнал регистрации и структура форм." if EXTENSION else ".")
 ))
 
 
@@ -71,7 +74,7 @@ def run_query(query_text: str, params: dict | None = None) -> dict:
         return {"columns": result.get("columns", []), "rows": rows[:MAX_QUERY_ROWS],
                 "total_rows": len(rows), "truncated": True,
                 "note": "Показаны первые 200 строк. Полный результат — через export_query_to_excel."}
-    return {**result, "total_rows": len(rows), "truncated": False}
+    return {**result, "total_rows": len(rows), "truncated": bool(result.get("truncated"))}
 
 
 def _months(start: date, end: date) -> list[tuple[datetime, datetime]]:
@@ -114,16 +117,22 @@ def export_query_to_excel(query_text: str, date_from: str, date_to: str, file_na
 
     columns: list = []
     rows: list = []
+    cut: list[str] = []
     for a, b in periods:
         part = _guard(client.run_query, query_text,
                       {"НачалоПериода": a.isoformat(), "КонецПериода": b.isoformat()})
         columns = columns or part.get("columns", [])
         rows.extend(part.get("rows", []))
+        if part.get("truncated"):
+            cut.append(f"{a:%m.%Y}")
 
     name = safe_file_name(file_name, ".xlsx")
     written = write_workbook(OUTBOX / name, [{"name": sheet_name, "columns": columns, "rows": rows}])
-    return {"file": name, "rows": written, "months": len(periods), "columns": columns,
-            "preview": rows[:5]}
+    result = {"file": name, "rows": written, "months": len(periods), "columns": columns, "preview": rows[:5]}
+    if cut:
+        result["warning"] = (f"База отдала не все строки за {', '.join(cut)} (не больше 1000 за запрос) — "
+                             "скажи сотруднику, что выгрузка неполная, или раздели запрос мельче.")
+    return result
 
 
 @mcp.tool()
@@ -145,6 +154,27 @@ def search_code(text: str, limit: int = 50) -> dict:
                     matches.append({"module": path.relative_to(root).as_posix(), "line": no,
                                     "text": line.strip()[:300]})
     return {"matches": matches, "total": total}
+
+
+def get_event_log(start_date: str | None = None, end_date: str | None = None, level: str | None = None,
+                  event: str | list[str] | None = None, user: str | None = None, limit: int = 100) -> dict:
+    """Журнал регистрации базы. Даты — ISO («2026-10-01T00:00:00»), по умолчанию последние 7 дней.
+    level: Ошибка | Предупреждение | Информация | Примечание. event — идентификатор события
+    («_$Data$_.Post») или список. Сначала ищи ошибки: level="Ошибка"."""
+    client = _client()
+    return _guard(lambda: client.get_event_log(start_date=start_date, end_date=end_date, level=level,
+                                               event=event, user=user, limit=max(1, min(limit, 500))))
+
+
+def get_form_structure(object_name: str) -> dict:
+    """Основная форма объекта («Документ.РеализацияТоваровУслуг»): элементы с путями к данным,
+    команды и обработчики событий — где на форме поле и что срабатывает при изменении."""
+    return _guard(_client().get_form, object_name)
+
+
+if EXTENSION:     # эти данные отдаёт только расширение MCP_HTTPService
+    mcp.tool()(get_event_log)
+    mcp.tool()(get_form_structure)
 
 
 if __name__ == "__main__":
