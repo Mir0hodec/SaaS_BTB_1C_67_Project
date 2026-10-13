@@ -24,7 +24,8 @@
     return dt.toLocaleDateString("ru-RU", { day: "numeric", month: "short" }) + ` в ${hm}`;
   };
   const when = (iso) => iso ? new Date(iso).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
-  const COLORS = ["#5b4fe9", "#0ea5e9", "#12a150", "#d97706", "#db2777", "#7c3aed", "#0d9488", "#dc2626"];
+  const COLORS = ["#c96442", "#5f8a62", "#4a6c8c", "#b07a2a", "#8c5a78", "#3f7f7a", "#9c6b3f", "#6a6fa8"];
+  const SPARK = '<svg viewBox="0 0 24 24"><path d="M12 3v5.2M12 15.8V21M3 12h5.2M15.8 12H21M5.6 5.6l3.7 3.7M14.7 14.7l3.7 3.7M18.4 5.6l-3.7 3.7M9.3 14.7l-3.7 3.7"/></svg>';
   const avatar = (name, id) => {
     const parts = String(name || "?").trim().split(/\s+/);
     const ini = ((parts[0] || "?")[0] + ((parts[1] || "")[0] || "")).toUpperCase();
@@ -165,14 +166,15 @@
       g += `<rect class="hit" x="${pad.l + i * step}" y="${pad.t}" width="${step}" height="${H - pad.t - pad.b}"><title>${esc(tip)}</title></rect>`;
     });
     return `<div class="chart"><svg viewBox="0 0 ${W} ${H}">${g}</svg></div>
-      <div class="legend"><span><i style="background:var(--accent)"></i>ответил</span><span><i style="background:var(--bad)"></i>ошибка</span><span><i style="background:var(--warn)"></i>лимит подписки</span></div>`;
+      <div class="legend"><span><i style="background:var(--accent-2)"></i>ответил</span><span><i style="background:var(--text);opacity:.6"></i>ошибка</span><span><i style="background:var(--warn)"></i>лимит подписки</span></div>`;
   }
 
+  const CHANNEL = { connect: "в линии «ИИ-помощник»", colleague: "в личных сообщениях", api: "через API", cli: "из консоли" };
   function journalRows(rows, compact = false) {
     if (!rows.length) return `<div class="empty">${ICON.inbox}Вопросов пока не было</div>`;
     return `<div class="table-wrap"><table><thead><tr><th>Когда</th><th>Сотрудник</th><th>Вопрос</th><th>Статус</th>${compact ? "" : '<th class="right">Время</th><th class="right">Цена</th>'}</tr></thead><tbody>
       ${rows.map((r) => `<tr data-id="${r.id}"><td class="muted num" style="white-space:nowrap">${esc(ago(r.created_at))}</td>
-        <td><div class="row">${avatar(r.user_name, r.user_key)}<span class="ellipsis" style="max-width:180px">${esc(r.user_name)}</span></div></td>
+        <td><div class="row">${avatar(r.user_name, r.user_key)}<div style="min-width:0"><div class="ellipsis" style="max-width:180px">${esc(r.user_name)}</div><div class="hint">${CHANNEL[r.channel] || ""}</div></div></div></td>
         <td class="q"><div class="ellipsis">${esc(r.question || "—")}</div></td><td>${chip(STATUS, r.status)}</td>
         ${compact ? "" : `<td class="right num muted">${r.duration_ms ? secs(r.duration_ms / 1000) : "—"}</td><td class="right num muted">${money(r.cost_usd)}</td>`}</tr>`).join("")}
       </tbody></table></div>`;
@@ -209,6 +211,8 @@
       : `<div class="row">${avatarIdle()}<div><b>${o.paused ? "Бот остановлен" : "Свободен"}</b><div class="muted">${o.paused ? "Новые вопросы получат ответ «временно выключен»" : "Ждёт новых сообщений"}</div></div></div>`;
     const acc = o.account || {}, wu = o.windows_user || {};
     page.innerHTML = `
+      ${heroCard(o)}
+      <div class="grid g3">${channelCards(o)}</div>
       <div class="grid g4">
         ${kpi("Вопросов сегодня", nf.format(t.questions), t.questions ? `${t.ok_rate}% без ошибок · ${t.users} ${plural(t.users, "сотрудник", "сотрудника", "сотрудников")}` : "сегодня ещё не спрашивали", ICON.msg)}
         ${kpi("Время ответа", t.median_seconds != null ? secs(t.median_seconds) : w.median_seconds != null ? secs(w.median_seconds) : "—", "медиана " + (t.median_seconds != null ? "за сегодня" : "за 7 дней"), ICON.clock)}
@@ -230,11 +234,62 @@
       </div>
       <div class="grid g32">
         <div class="card"><h2>Последние вопросы <a class="hint" href="#journal">весь журнал →</a></h2><div id="recent">${journalRows(o.recent, true)}</div></div>
-        <div class="card"><h2>Приём сообщений ${hist ? `<span class="hint">${r.next_poll_in != null ? "следующая проверка через " + secs(r.next_poll_in) : ""}</span>` : ""}</h2>
+        <div class="card"><h2>Личные сообщения ${hist ? `<span class="hint">${r.next_poll_in != null ? "следующая проверка через " + secs(r.next_poll_in) : ""}</span>` : ""}</h2>
           ${hist ? receiverCard(r, calls, perHour, meterCls) : `<div class="muted">Режим: ${esc(r.channel)} / ${esc(r.receive)}</div>`}</div>
       </div>`;
     bindRows($("#recent"));
     $("#acc-switch").onclick = (e) => { e.preventDefault(); accountHelp(acc); };
+  }
+  function greeting() {
+    const h = new Date().getHours();
+    return h < 5 ? "Доброй ночи" : h < 12 ? "Доброе утро" : h < 18 ? "Добрый день" : "Добрый вечер";
+  }
+  function heroCard(o) {
+    const t = o.stats.today, line = o.line || {};
+    const where = [line.enabled ? "в линии «ИИ-помощник»" : "", o.receiver.receive === "history" ? "в личных сообщениях «Александра»" : ""]
+      .filter(Boolean).join(" и ");
+    let state;
+    if (o.paused) state = "Помощник <b>на паузе</b> — сотрудники получают «временно выключен». Включить — кнопкой справа вверху.";
+    else if (o.limit_until) state = `Лимит подписки Claude исчерпан, обновится <b>в ${new Date(o.limit_until).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}</b>. До этого бот вежливо отказывает.`;
+    else if (o.current) state = `Сейчас отвечает: <b>${esc(o.current.user_name)}</b> — «${esc(o.current.text.slice(0, 90))}»`;
+    else state = `Помощник на связи и ждёт вопросов ${esc(where)}.`;
+    const today = t.questions
+      ? ` Сегодня — <b>${nf.format(t.questions)} ${plural(t.questions, "вопрос", "вопроса", "вопросов")}</b>, ${t.ok_rate}% без ошибок.`
+      : " Сегодня вопросов ещё не было.";
+    return `<div class="card hero ${o.current ? "busy" : ""}"><div class="hero-mark">${SPARK}</div>
+      <div class="grow"><h2 class="hero-title">${greeting()}</h2><div class="hero-sub">${state}${today}</div></div></div>`;
+  }
+  function channelCards(o) {
+    const line = o.line || {}, r = o.receiver, ch = o.channels_today || {}, b = o.bases || {};
+    const lineChip = !line.enabled ? '<span class="chip">не настроена</span>'
+      : line.hooked ? '<span class="chip ok">подключена</span>'
+      : line.error ? '<span class="chip bad">ошибка</span>' : '<span class="chip warn">подключается</span>';
+    const lineText = !line.enabled ? "Своей линии нет — сотрудники пишут только в личные сообщения."
+      : line.hooked ? "1С-Коннект присылает сообщения сразу — ответ начинается без ожидания."
+      : esc(line.error || "Бот поднимает туннель и подписывается на линию.");
+    const people = (r.targets || []).length;
+    const dmChip = !r.credentials ? '<span class="chip bad">нет доступа к API</span>'
+      : !r.running ? '<span class="chip bad">не запущен</span>'
+      : (r.targets || []).some((x) => x.state === "access_denied" || x.state === "error") ? '<span class="chip warn">есть предупреждения</span>'
+      : '<span class="chip ok">работает</span>';
+    const wait = people && r.interval ? Math.ceil((r.interval * people) / 60) : 0;
+    const dmText = people ? `Бот проверяет переписку ${people} ${plural(people, "сотрудника", "сотрудников", "сотрудников")} по очереди — ответ в течение ~${wait} мин.`
+      : "Пока никого не слушает — добавьте сотрудников.";
+    const baseText = b.total ? `${b.toolkit ? `${b.toolkit} ${plural(b.toolkit, "копия", "копии", "копий")} на ПК сотрудников` : ""}${b.toolkit && b.extension ? " · " : ""}${b.extension ? `${b.extension} ${plural(b.extension, "опубликованная", "опубликованные", "опубликованных")}` : ""}` || "демо-база"
+      : "Баз пока нет.";
+    const icon = {
+      line: '<svg viewBox="0 0 24 24"><path d="M4 6.5C4 5.1 5.1 4 6.5 4h11C18.9 4 20 5.1 20 6.5v7c0 1.4-1.1 2.5-2.5 2.5H10l-4.5 4v-4h0C4.7 16 4 15.3 4 14.5z"/><path d="M9 9.5h6M9 12.5h3.5"/></svg>',
+      dm: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c1-3.9 3.7-6 7-6s6 2.1 7 6"/></svg>',
+      db: '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>',
+    };
+    const card = (ic, title, chip, text, foot) => `<div class="card channel"><div class="channel-head"><div class="channel-icon">${ic}</div>
+      <div class="grow"><div class="channel-title">${title}</div><div class="channel-state">${chip}</div></div></div>
+      <div class="channel-text">${text}</div><div class="channel-foot">${foot}</div></div>`;
+    const today = (n) => `<span class="muted">сегодня</span> <b class="num">${nf.format(n || 0)}</b>`;
+    return card(icon.line, "Линия «ИИ-помощник»", lineChip, lineText, today(ch.connect))
+      + card(icon.dm, "Личные сообщения", dmChip, dmText, `${today(ch.colleague)} <a href="#people">сотрудники →</a>`)
+      + card(icon.db, "Базы 1С", b.total ? `<span class="chip accent">${b.total}</span>` : '<span class="chip">нет</span>',
+        esc(baseText), '<span class="muted">по хэштегу или ссылке</span> <a href="#bases">базы →</a>');
   }
   const planName = (p) => ({ pro: "Pro", max: "Max", team: "Team", enterprise: "Enterprise" }[p] || p);
   function accountHelp(acc) {

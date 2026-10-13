@@ -226,6 +226,33 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
                 "bot_name": directory.name(cs.bot_specialist_id) if cs.bot_specialist_id else None,
                 "credentials": bool(cs.login and cs.password), **snap}
 
+    def line_view() -> dict:
+        """Своя линия «ИИ-помощник»: состояние туннеля и вебхука пишет супервизор (logs/line.json)."""
+        cs = settings.connect
+        info: dict = {"line_id": cs.line_id, "kind": cs.line_hook, "hooked": False, "tunnel": False}
+        try:
+            info.update(json.loads((REPO_ROOT / "logs" / "line.json").read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            pass
+        info["enabled"] = cs.line_enabled
+        return info
+
+    def channels_today() -> dict:
+        tz = datetime.now().astimezone().tzinfo
+        start = datetime.combine(datetime.now(tz).date(), datetime.min.time(), tz)
+        counts: dict[str, int] = {}
+        for row in store.journal_since(start):
+            counts[row["channel"]] = counts.get(row["channel"], 0) + 1
+        return counts
+
+    def bases_summary() -> dict:
+        try:
+            bases = list(load_bases(settings.bases_path).values())
+        except (FileNotFoundError, ValueError):
+            bases = []
+        return {"total": len(bases), "toolkit": sum(b.via_toolkit for b in bases),
+                "extension": sum(b.via_extension for b in bases)}
+
     @r.get("/panel/api/overview")
     def overview(request: Request) -> dict:
         guard(request, api=True)
@@ -259,6 +286,9 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
             "checks": checks,
             "account": claude_account(settings),
             "windows_user": windows_user(),
+            "line": line_view(),
+            "channels_today": channels_today(),
+            "bases": bases_summary(),
         }
 
     @r.post("/panel/api/pause")

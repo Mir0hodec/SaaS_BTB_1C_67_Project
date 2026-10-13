@@ -163,7 +163,7 @@ class Store:
 
     def journal_since(self, since: datetime) -> list[dict]:
         """Записи с момента since (UTC) — для сводки и графика."""
-        cols = ["created_at", "user_key", "status", "duration_ms", "cost_usd"]
+        cols = ["created_at", "user_key", "status", "duration_ms", "cost_usd", "channel"]
         rows = self._exec(f"SELECT {', '.join(cols)} FROM journal WHERE created_at >= ? ORDER BY id",
                           (since.astimezone(timezone.utc).isoformat(),))
         return [dict(zip(cols, r)) for r in rows]

@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
@@ -22,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -159,17 +161,20 @@ class LineLink:
         self.url = ""
         self.hooked = False
         self.next_try = 0.0
+        self.line_id = self.kind = ""
 
     def tick(self) -> None:
         if self.tunnel is not None and self.tunnel.poll() is not None:
             say("туннель остановился — перезапуск")
             self.tunnel, self.url, self.hooked = None, "", False
+            self.save_status("туннель остановился — переподключаюсь")
         if self.hooked or time.monotonic() < self.next_try:
             return
         self.next_try = time.monotonic() + self.RETRY_SECONDS
         settings = Settings.load()              # линию могли вписать в settings.yaml после запуска
         if not settings.connect.line_enabled:   # своей линии нет — вебхук и SetHook не нужны
             return
+        self.line_id, self.kind = settings.connect.line_id, settings.connect.line_hook
         if self.mode == "url" and settings.connect.public_url:
             self.url = settings.connect.public_url
         elif self.mode == "tunnel" and self.tunnel is None:
@@ -177,10 +182,25 @@ class LineLink:
                 self.tunnel, self.url = start_tunnel()
             except (RuntimeError, OSError) as exc:
                 say(f"линия: туннель не запущен ({exc}) — личные сообщения работают как раньше")
+                self.save_status(f"туннель не запущен: {exc}")
                 return
             say(f"туннель: {self.url}")
         if self.url:
             self.hooked = set_hook(settings, self.url)
+            self.save_status("" if self.hooked else "1С-Коннект не принял подписку — повтор через 5 минут")
+
+    def save_status(self, error: str = "") -> None:
+        """Состояние линии для панели управления (logs/line.json)."""
+        data = {"line_id": self.line_id, "kind": self.kind, "url": self.url,
+                "hooked": self.hooked, "tunnel": self.tunnel is not None and self.tunnel.poll() is None,
+                "error": error, "at": datetime.now().astimezone().isoformat(timespec="seconds")}
+        try:
+            LOG_DIR.mkdir(exist_ok=True)
+            tmp = LOG_DIR / "line.json.tmp"
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, LOG_DIR / "line.json")
+        except OSError:
+            pass
 
 
 def already_running() -> bool:
