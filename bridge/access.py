@@ -64,10 +64,12 @@ def load_users(path: Path) -> dict[str, User]:
     return users
 
 
-def resolve_user(path: Path, user_id: str) -> User | None:
-    """Сотрудник по user_id 1С-Коннект. При allow_all — любой, кто пишет в линию."""
+def resolve_user(path: Path, user_id: str, *, use_deny: bool = True) -> User | None:
+    """Сотрудник по user_id 1С-Коннект. При allow_all — любой, кто пишет в линию.
+    deny — только для личных сообщений (там сотруднику может отвечать старый бот);
+    на своей линии «ИИ-помощник» пересечения нет — use_deny=False."""
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if user_id in {str(x) for x in raw.get("deny") or []}:
+    if use_deny and user_id in {str(x) for x in raw.get("deny") or []}:
         return None   # например, сотрудник, которому пока отвечает другой бот
     known = load_users(path).get(user_id)
     if known:

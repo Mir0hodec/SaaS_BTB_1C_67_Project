@@ -205,7 +205,7 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
         user_id, message_id = event.get("user_id"), event.get("message_id")
         if not user_id or event.get("author_id") != user_id or not message_id:
             return   # сообщения специалистов и самого бота
-        user = resolve_user(settings.users_path, user_id)
+        user = resolve_user(settings.users_path, user_id, use_deny=False)
         if user is None:
             # Чужим бот молча не отвечает — даже «доступ запрещён» не пишет.
             store.log(channel="connect", user_key=user_id, user_name=None, base_id=None,

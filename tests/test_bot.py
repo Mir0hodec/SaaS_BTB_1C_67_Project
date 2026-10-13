@@ -287,3 +287,4 @@ def test_deny_list_overrides_allow_all(tmp_path):
     path.write_text("allow_all: true\ndeny: ['igor-uuid']\n", encoding="utf-8")
     assert resolve_user(path, "igor-uuid") is None
     assert resolve_user(path, "olga-uuid").name == "Сотрудник"
+    assert resolve_user(path, "igor-uuid", use_deny=False) is not None     # на своей линии — отвечаем
