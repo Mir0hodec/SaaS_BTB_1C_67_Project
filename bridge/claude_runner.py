@@ -115,7 +115,8 @@ class ClaudeRunner:
             env["CLAUDE_CONFIG_DIR"] = self.settings.claude.config_dir
         return env
 
-    def build_args(self, *, session_id: str, is_new: bool, mcp_config: Path, allowed: list[str]) -> list[str]:
+    def build_args(self, *, session_id: str, is_new: bool, mcp_config: Path, allowed: list[str],
+                   disallowed: list[str] | None = None) -> list[str]:
         c = self.settings.claude
         args = [
             "-p", FIXED_PROMPT,
@@ -125,7 +126,7 @@ class ClaudeRunner:
             "--mcp-config", str(mcp_config),
             "--strict-mcp-config",
             "--allowedTools", ",".join(allowed),
-            "--disallowedTools", ",".join(BUILTIN_TOOLS_TO_REMOVE),
+            "--disallowedTools", ",".join(BUILTIN_TOOLS_TO_REMOVE + (disallowed or [])),
             "--append-system-prompt-file", str(SYSTEM_PROMPT_FILE),
             "--max-turns", str(c.max_turns),
         ]
@@ -135,10 +136,11 @@ class ClaudeRunner:
         return args
 
     def run(self, *, question: str, session_id: str, is_new: bool, cwd: Path,
-            mcp_config: Path, allowed: list[str], extra_env: dict[str, str] | None = None) -> RunResult:
+            mcp_config: Path, allowed: list[str], extra_env: dict[str, str] | None = None,
+            disallowed: list[str] | None = None) -> RunResult:
         cmd = _base_command(self.settings.claude.binary,
-                            self.build_args(session_id=session_id, is_new=is_new,
-                                            mcp_config=mcp_config, allowed=allowed))
+                            self.build_args(session_id=session_id, is_new=is_new, mcp_config=mcp_config,
+                                            allowed=allowed, disallowed=disallowed))
         proc = subprocess.Popen(
             cmd, cwd=str(cwd), env={**self._env(), **(extra_env or {})},   # токен базы — только этому процессу
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

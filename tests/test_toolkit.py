@@ -82,7 +82,8 @@ def _ask(env, monkeypatch, user_key, text, *, health=(True, ""), probe=None):
     a = Assistant(env, Store(env.data_dir / "s.sqlite3"), runner=runner)
     monkeypatch.setattr(onec_toolkit, "health", lambda url, timeout=3.0: health)
     monkeypatch.setattr(onec_toolkit, "probe", lambda url, token, timeout=60.0: probe or onec_toolkit.ProbeResult(
-        ok=True, user="Администратор", password_ok=True, config="ОСИ", config_title="ОСИ ЖКХ", version="3.1"))
+        ok=True, user="Администратор", password_ok=True, config="ОСИ", config_title="ОСИ ЖКХ", version="3.1",
+        tools=["execute_query", "execute_code", "get_metadata", "get_screenshot", "restart_1c_session"]))
     reply = a.handle(Job(channel="connect", user=User(key=user_key, name="Иван", bases="*"), text=text))
     return reply, runner
 
@@ -110,6 +111,25 @@ def test_gate_passes_token_only_via_env(env, monkeypatch):
     assert "Подключение: MCP Toolkit http://192.168.0.51:6003/mcp" in call["question"]
     assert "Запись в базу разрешена" in call["question"]
     assert "tok-123" not in call["mcp_config"].read_text(encoding="utf-8")
+    # лишние инструменты базы убраны из сессии, иначе проверка при старте Claude остановит запуск
+    assert {"mcp__onec__get_screenshot", "mcp__onec__restart_1c_session",
+            "mcp__onec__close_1c_session"} <= set(call["disallowed"])
+    assert not set(call["disallowed"]) & set(call["allowed"])
+
+
+def test_read_only_base_disallows_execute_code(env, monkeypatch):
+    toolkit_secrets.set_token("osi_ro", "tok")
+    reply, runner = _ask(env, monkeypatch, YULIA, "#оси остатки")
+    call = runner.calls[0]
+    assert "mcp__onec__execute_code" in call["disallowed"] and "mcp__onec__execute_code" not in call["allowed"]
+
+
+def test_runner_passes_disallowed_tools(env, tmp_path):
+    from bridge.claude_runner import ClaudeRunner
+    args = ClaudeRunner(env).build_args(session_id="s", is_new=True, mcp_config=tmp_path / "m.json",
+                                        allowed=["mcp__onec__get_metadata"], disallowed=["mcp__onec__get_screenshot"])
+    denied = args[args.index("--disallowedTools") + 1].split(",")
+    assert "Bash" in denied and "mcp__onec__get_screenshot" in denied
 
 
 def test_parse_check_is_anonymization_safe():

@@ -25,7 +25,7 @@ from bridge import docs, onec_toolkit, toolkit_secrets
 from bridge.answer import clean_answer
 from bridge.claude_runner import ClaudeRunner, RunResult
 from bridge.config import REPO_ROOT, Settings
-from bridge.mcp_config_builder import build_mcp_config, session_tools
+from bridge.mcp_config_builder import build_mcp_config, session_disallowed, session_tools
 from bridge.store import Store, now
 from common.doc_extract import SUPPORTED_EXTENSIONS, extract_text
 from common.doc_index import BuildReport, DocIndex, IndexNotBuiltError
@@ -52,7 +52,8 @@ TOOLKIT_HELP = (
     "2. Запустите employee_toolkit.ps1 правой кнопкой → «Выполнить с помощью PowerShell»: он откроет порт для "
     "сервера помощника и создаст ярлык «1С + MCP Toolkit».\n"
     "3. Откройте базу этим ярлыком — MCP Toolkit запустится сам. В первый раз нажмите «Сгенерировать» у поля "
-    "«Токен доступа». Если помощник должен исправлять данные — включите автоподтверждение «Записать» "
+    "«Токен доступа». Если помощник должен исправлять данные — внизу окна, в блоке «Автоматически разрешать операции», "
+    "поставьте галочку «Записать» "
     "(после каждого открытия базы). Окно не закрывайте.\n"
     "4. Сообщите администратору помощника адрес из окна скрипта и токен — он добавит базу в панели, "
     "и её можно будет выбирать хэштегом.\n"
@@ -253,6 +254,7 @@ class Assistant:
         attach_dir.mkdir(parents=True, exist_ok=True)
         attachments = [Path(shutil.move(str(p), attach_dir / p.name)) for p in job.attachments if p.exists()]
 
+        check = self.toolkit_checks.get(base.id) if base is not None and base.via_toolkit else None
         mcp_config = build_mcp_config(self.settings, base_id=base.id if base else None, outbox=outbox,
                                       attachments=attach_dir, target=workdir / "mcp" / f"{job_id}.json", base=base)
         result = self.runner.run(
@@ -260,6 +262,7 @@ class Assistant:
             session_id=session.session_id, is_new=session.is_new, cwd=workdir,
             mcp_config=mcp_config,
             allowed=session_tools(self.settings, base),
+            disallowed=session_disallowed(self.settings, base, check.tools if check else ()),
             extra_env=extra_env,
         )
         return self._finish(job, base, question, result, outbox, started)
@@ -332,8 +335,8 @@ class Assistant:
             if result.session_total_cost is not None else None
         files = sorted(p for p in outbox.iterdir() if p.is_file()) if outbox.is_dir() else []
         if result.is_error:
-            # Сломанную сессию не продолжаем — следующий вопрос начнёт новую.
-            self.store.reset_session(job.user.key)
+            # Сломанный разговор Claude не продолжаем, но база остаётся: «исправь» без хэштега пойдёт в неё же.
+            self.store.restart_session(job.user.key)
             self._log(job, base_id, "error", started, cost=cost, error=result.error)
             return Reply("Не получилось ответить: произошла ошибка. Попробуйте ещё раз "
                          "или переформулируйте вопрос.", "error", files)

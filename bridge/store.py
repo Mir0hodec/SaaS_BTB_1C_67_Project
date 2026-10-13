@@ -60,6 +60,9 @@ class Store:
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(journal)")}
         if "answer" not in cols:   # журнал старых версий — без текста ответа
             self._conn.execute("ALTER TABLE journal ADD COLUMN answer TEXT")
+        if "started" not in {r[1] for r in self._conn.execute("PRAGMA table_info(sessions)")}:
+            # 0 — разговор Claude ещё не начат (после сбоя), база разговора при этом сохранена
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN started INTEGER NOT NULL DEFAULT 1")
         self._lock = threading.Lock()
 
     def _exec(self, sql: str, params: tuple = ()) -> list[tuple]:
@@ -75,21 +78,26 @@ class Store:
         и не путает её цифры с цифрами прошлой. keep_base=True (в сообщении
         не было хэштега) — остаёмся в базе текущего разговора.
         """
-        row = self._exec("SELECT session_id, base_id, last_active, cost_total FROM sessions WHERE user_key=?",
-                         (user_key,))
+        row = self._exec("SELECT session_id, base_id, last_active, cost_total, started FROM sessions "
+                         "WHERE user_key=?", (user_key,))
         stamp = now().isoformat()
         if row:
-            sid, cur_base, last, cost = row[0]
+            sid, cur_base, last, cost, started = row[0]
             fresh = now() - datetime.fromisoformat(last) <= timedelta(minutes=idle_minutes)
             if keep_base:
                 base_id = cur_base if fresh else None
             if fresh and base_id == cur_base:
-                self._exec("UPDATE sessions SET last_active=? WHERE user_key=?", (stamp, user_key))
-                return Session(sid, cur_base, False, cost)
+                self._exec("UPDATE sessions SET last_active=?, started=1 WHERE user_key=?", (stamp, user_key))
+                return Session(sid, cur_base, not started, cost)
         sid = str(uuid.uuid4())
-        self._exec("INSERT OR REPLACE INTO sessions (user_key, session_id, base_id, last_active, cost_total) "
-                   "VALUES (?, ?, ?, ?, 0)", (user_key, sid, base_id, stamp))
+        self._exec("INSERT OR REPLACE INTO sessions (user_key, session_id, base_id, last_active, cost_total, started) "
+                   "VALUES (?, ?, ?, ?, 0, 1)", (user_key, sid, base_id, stamp))
         return Session(sid, base_id, True, 0.0)
+
+    def restart_session(self, user_key: str) -> None:
+        """После сбоя: следующий вопрос начнёт новый разговор Claude, но в той же базе."""
+        self._exec("UPDATE sessions SET session_id=?, cost_total=0, started=0 WHERE user_key=?",
+                   (str(uuid.uuid4()), user_key))
 
     def add_cost(self, user_key: str, session_total: float) -> float:
         """CLI сообщает накопленную стоимость разговора — возвращаем прирост за вопрос."""

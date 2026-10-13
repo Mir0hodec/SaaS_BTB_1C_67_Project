@@ -114,6 +114,20 @@ def allowed_tools(base_id: str | None, counterparty: bool = False, onec_code: bo
     return tools
 
 
+# Инструменты MCP Toolkit, которые бот не получает никогда: рвут сеанс 1С сотрудника
+# или снимают его экран. Остальное лишнее берётся из списка, который вернула сама база.
+TOOLKIT_NEVER = ["restart_1c_session", "close_1c_session", "get_screenshot"]
+
+
+def session_disallowed(settings: Settings, base: Base | None, toolkit_tools: list[str] | tuple = ()) -> list[str]:
+    """Инструменты базы сверх разрешённых — убираются из сессии (--disallowedTools), иначе
+    проверка при старте Claude увидит их и остановит запуск."""
+    if base is None or not base.via_toolkit:
+        return []
+    allowed = set(session_tools(settings, base))
+    return sorted({f"mcp__onec__{t}" for t in [*TOOLKIT_NEVER, *toolkit_tools]} - allowed)
+
+
 def session_tools(settings: Settings, base: Base | None = None) -> list[str]:
     """Разрешённые инструменты сессии по настройкам — одно место для бота, панели и проверок,
     чтобы проверка Claude видела ровно то же, что видит бот."""

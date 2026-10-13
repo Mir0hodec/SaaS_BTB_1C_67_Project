@@ -129,6 +129,16 @@ def test_session_follows_base_and_idle(tmp_path):
     assert d.is_new and d.base_id is None
 
 
+def test_session_after_error_keeps_base(tmp_path):
+    st = Store(tmp_path / "s.sqlite3")
+    a = st.session("u", "test_base", 60, keep_base=False)
+    st.restart_session("u")                                # сбой: разговор Claude — заново
+    b = st.session("u", None, 60, keep_base=True)          # «исправь» без хэштега
+    c = st.session("u", None, 60, keep_base=True)
+    assert b.is_new and b.base_id == "test_base" and b.session_id != a.session_id
+    assert not c.is_new and c.session_id == b.session_id
+
+
 # --- 1С-Коннект целиком (заглушка CLI) ---
 
 @windows_only
