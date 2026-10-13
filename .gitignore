@@ -36,3 +36,6 @@ config/*.bak
 .secrets/
 extensions/*
 !extensions/README.txt
+
+# Ярлык панели в корне папки бота — создаёт scripts/panel_shortcut.ps1
+/*.lnk

@@ -64,21 +64,7 @@ Start-ScheduledTask -TaskName $TaskName
 
 Write-Host "== Ярлыки на общем рабочем столе"
 $desk = [Environment]::GetFolderPath("CommonDesktopDirectory")
-# Панель — в Edge или Chrome: ярлык .url открылся бы в браузере по умолчанию, а это бывает Internet Explorer.
-$panelUrl = "http://127.0.0.1:$port/panel"
-$browser = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
-             "$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe") |
-    Where-Object { Test-Path $_ } | Select-Object -First 1
-Remove-Item (Join-Path $desk "Панель ИИ-помощника.url"), (Join-Path $desk "Панель ИИ-помощника.lnk") -ErrorAction SilentlyContinue
-if ($browser) {
-    $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $desk "Панель ИИ-помощника.lnk"))
-    $lnk.TargetPath = $browser
-    $lnk.Arguments = $panelUrl
-    $lnk.Description = "Панель управления ИИ-помощником"
-    $lnk.Save()
-} else {
-    Set-Content -Encoding ASCII (Join-Path $desk "Панель ИИ-помощника.url") "[InternetShortcut]`r`nURL=$panelUrl"
-}
+& (Join-Path $PSScriptRoot "panel_shortcut.ps1") -Port $port   # панель: в папке бота и на рабочем столе
 Set-Content -Encoding ASCII (Join-Path $desk "Запустить ИИ-помощника.cmd") "@powershell -NoProfile -ExecutionPolicy Bypass -File `"$root\scripts\start_bot.ps1`""
 Set-Content -Encoding ASCII (Join-Path $desk "Сменить аккаунт Claude.cmd") "@powershell -NoProfile -ExecutionPolicy Bypass -File `"$root\scripts\login_claude.ps1`""
 Set-Content -Encoding UTF8 "C:\Панель ИИ-помощника.txt" @(
@@ -88,6 +74,7 @@ Set-Content -Encoding UTF8 "C:\Панель ИИ-помощника.txt" @(
     "Открывать в Edge или Chrome на этом сервере (не в Internet Explorer), под любым пользователем. Пароль не нужен: снаружи сервера панель не открывается.",
     "",
     "Бот работает системной задачей Windows «$TaskName»: запускается вместе с сервером и не зависит от того, кто вошёл.",
+    "Ярлык панели — в папке бота: $root\! Панель управления ИИ-помощника.",
     "Ярлыки на рабочем столе (у всех пользователей):",
     "  «Панель ИИ-помощника» — открыть панель;",
     "  «Запустить ИИ-помощника» — запустить или перезапустить бота, если панель не открывается;",
