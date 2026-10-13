@@ -31,11 +31,18 @@ def test_tunnel_url_is_caught_and_hook_is_set(tmp_path, monkeypatch, repo_root):
             hooks.append(kw)
 
     monkeypatch.setattr(start, "ConnectClient", FakeClient)
-    for k, v in {"CONNECT_API_LOGIN": "l", "CONNECT_API_PASSWORD": "p", "CONNECT_LINE_ID": "line",
+    for k, v in {"CONNECT_API_LOGIN": "l", "CONNECT_API_PASSWORD": "p", "CONNECT_LINE_ID": "old-bot-line",
                  "CONNECT_WEBHOOK_TOKEN": "tok"}.items():
         monkeypatch.setenv(k, v)
-    start.set_hook(Settings.load(repo_root / "config" / "settings.example.yaml"), url)
-    assert hooks == [{"line_id": "line", "url": url + "/connect/hook", "token": "tok"}]
+    s = Settings.load(repo_root / "config" / "settings.example.yaml")
+    start.set_hook(s, url)                       # своей линии нет — старую не берём
+    assert hooks == []
+    s.connect.line_id = "old-bot-line"           # даже если вписать линию старого бота — отказ
+    start.set_hook(s, url)
+    assert hooks == []
+    s.connect.line_id = "ai-line"
+    start.set_hook(s, url)
+    assert hooks == [{"line_id": "ai-line", "url": url + "/connect/hook", "token": "tok"}]
 
 
 def test_hook_skipped_without_credentials(monkeypatch, repo_root, tmp_path, capsys):

@@ -215,18 +215,31 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
             return   # повторная доставка того же события
 
         deliver = lambda reply: send_reply(user_id, reply)  # noqa: E731
+        # Линия с внешним сервером обработки: на каждое сообщение — ответ в течение 30 секунд,
+        # иначе 1С-Коннект передаст обращение специалисту. Поэтому «Принял…» — сразу, не из очереди.
+        quick_ack = ack(user_id)
+        if quick_ack is not None:
+            threading.Thread(target=_safe(quick_ack), daemon=True).start()
         if event["message_type"] == TEXT_MESSAGE:
             text = str(event.get("text") or "").strip()
             if not text:
                 return
             worker.submit(Task(job=None, deliver=deliver, prepare=lambda: Job(
                 channel="connect", user=user, text=text,
-                attachments=store.take_pending_files(user.key), on_start=ack(user_id))))
+                attachments=store.take_pending_files(user.key))))
             return
 
         file_info = event.get("file") or {}
         worker.submit(Task(job=None, deliver=deliver,
-                           prepare=lambda: _prepare_file_job(user, file_info, deliver, ack(user_id))))
+                           prepare=lambda: _prepare_file_job(user, file_info, deliver, None)))
+
+    def _safe(fn: Callable[[], None]) -> Callable[[], None]:
+        def run() -> None:
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 — «Принял» не отправился: ответ всё равно придёт
+                log.exception("линия: не удалось отправить «Принял»")
+        return run
 
     def _prepare_file_job(user: User, info: dict, deliver: Callable[[Reply], None],
                           on_start: Callable[[], None] | None) -> Job | None:

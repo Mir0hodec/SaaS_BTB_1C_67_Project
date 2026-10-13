@@ -66,9 +66,18 @@ class ConnectSettings:
     public_url: str = ""             # для webhook_mode: url, например https://bot.example.kz
 
     def __post_init__(self) -> None:
-        # Те же имена переменных, что были у старого бота на сервере.
-        self.line_id = self.line_id or os.environ.get("CONNECT_LINE_ID", "")
+        # line_id — только из settings.yaml: в CONNECT_LINE_ID на сервере линия старого бота,
+        # подписка на неё перехватила бы его сообщения.
         self.bot_specialist_id = self.bot_specialist_id or os.environ.get("CONNECT_BOT_SPECIALIST_ID", "")
+
+    @property
+    def foreign_line_id(self) -> str:
+        """Линия старого бота (CONNECT_LINE_ID) — на неё новый бот не подписывается никогда."""
+        return os.environ.get("CONNECT_LINE_ID", "")
+
+    @property
+    def line_enabled(self) -> bool:
+        return bool(self.line_id) and self.line_id != self.foreign_line_id
 
     @property
     def agent_login(self) -> str:

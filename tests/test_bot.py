@@ -246,13 +246,15 @@ def test_strict_mode_ignores_unknown(settings):
     assert resolve_user(settings.users_path, USER).owner
 
 
-def test_line_and_bot_ids_from_env(monkeypatch):
+def test_old_bot_line_is_never_taken(monkeypatch):
+    """CONNECT_LINE_ID на сервере — линия старого бота: новый бот её не берёт и не подписывается."""
     from bridge.config import ConnectSettings
-    monkeypatch.setenv("CONNECT_LINE_ID", "L-1")
+    monkeypatch.setenv("CONNECT_LINE_ID", "L-OLD")
     monkeypatch.setenv("CONNECT_BOT_SPECIALIST_ID", "S-1")
     cs = ConnectSettings()
-    assert (cs.line_id, cs.bot_specialist_id) == ("L-1", "S-1")
-    assert ConnectSettings(line_id="L-2").line_id == "L-2"
+    assert (cs.line_id, cs.bot_specialist_id) == ("", "S-1") and not cs.line_enabled
+    assert ConnectSettings(line_id="L-AI").line_enabled
+    assert not ConnectSettings(line_id="L-OLD").line_enabled
 
 
 def test_knowledge_base_reindexes_when_folder_changes(settings):

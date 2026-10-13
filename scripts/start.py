@@ -123,8 +123,11 @@ def start_tunnel() -> tuple[subprocess.Popen, str]:
 
 def set_hook(settings: Settings, base_url: str) -> None:
     cs = settings.connect
+    if cs.line_id and cs.line_id == cs.foreign_line_id:
+        say("вебхук НЕ прописан: connect.line_id — линия старого бота (CONNECT_LINE_ID), её не трогаем")
+        return
     missing = [n for n, v in (("CONNECT_API_LOGIN", cs.login), ("CONNECT_API_PASSWORD", cs.password),
-                              ("CONNECT_LINE_ID", cs.line_id)) if not v]
+                              ("connect.line_id в settings.yaml", cs.line_id)) if not v]
     if missing:
         say("вебхук НЕ прописан: не заданы " + ", ".join(missing) + " (см. «Доступы ИИ-помощника.docx»)")
         return
@@ -162,27 +165,39 @@ def main() -> int:
     bridge = start_bridge()
     tunnel = None
     if colleague:
-        # Личные сообщения: приём через десктопное приложение 1С-Коннект на
-        # этой машине, ответы через REST. Вебхук и туннель не нужны, SetHook
-        # не вызывается — действующие интеграции Коннекта не трогаем.
-        say("режим личных сообщений: жду 1С-Коннект под учёткой бота (см. logs/bridge.log)")
-    elif mode == "url" and settings.connect.public_url:
-        set_hook(settings, settings.connect.public_url)
-    elif mode == "tunnel":
-        tunnel, url = start_tunnel()
-        say(f"туннель: {url}")
-        set_hook(settings, url)
-
+        say("личные сообщения: опрос истории 1С-Коннекта (см. logs/bridge.log)")
+    line_retry_at = 0.0
     while True:
+        if settings.connect.line_enabled and mode == "tunnel" and tunnel is None and time.monotonic() >= line_retry_at:
+            tunnel = connect_line(settings, mode)      # своя линия — вебхук; без неё SetHook не вызывается
+            line_retry_at = time.monotonic() + 300
+        elif settings.connect.line_enabled and mode == "url" and line_retry_at == 0.0:
+            connect_line(settings, mode)
+            line_retry_at = 1.0
         time.sleep(5)
         if bridge.poll() is not None:
             say("мост остановился — перезапуск")
             bridge = start_bridge()
         if tunnel is not None and tunnel.poll() is not None:
             say("туннель остановился — перезапуск")
-            tunnel, url = start_tunnel()
-            say(f"туннель: {url}")
-            set_hook(settings, url)
+            tunnel = None
+
+
+def connect_line(settings: Settings, mode: str) -> subprocess.Popen | None:
+    """Вебхук линии. Сбой туннеля не роняет бота: личные сообщения работают дальше."""
+    if mode == "url" and settings.connect.public_url:
+        set_hook(settings, settings.connect.public_url)
+        return None
+    if mode != "tunnel":
+        return None
+    try:
+        tunnel, url = start_tunnel()
+    except (RuntimeError, OSError) as exc:
+        say(f"линия: туннель не запущен ({exc}) — личные сообщения работают как раньше")
+        return None
+    say(f"туннель: {url}")
+    set_hook(settings, url)
+    return tunnel
 
 
 if __name__ == "__main__":

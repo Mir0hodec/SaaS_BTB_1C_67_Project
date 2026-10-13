@@ -8,6 +8,10 @@ https://1c-connect.atlassian.net/wiki/spaces/PUBLIC/pages/1349877768/4.2.+API
   POST /v1/line/send/message/  SendMessageLine — текст в чат линии
   POST /v1/line/send/file/     SendFileLine — файл в чат (multipart: meta + file)
 Авторизация — HTTP Basic. Ограничения: 20 запросов/с, 600/мин (иначе 429).
+
+На линии бот работает в режиме «внешний сервер обработки» (SetHook type=bot): сообщения
+уходят без bot_as_spec — иначе обращение передаётся специалисту и события боту больше
+не приходят. На каждое сообщение пользователя бот обязан ответить за 30 секунд.
 """
 from __future__ import annotations
 
@@ -56,13 +60,13 @@ class ConnectClient:
     def send_message(self, *, line_id: str, user_id: str, author_id: str, text: str) -> None:
         self._post("/v1/line/send/message/", json={
             "line_id": line_id, "user_id": user_id, "author_id": author_id,
-            "text": text, "bot_as_spec": True,
+            "text": text,
         })
 
     def send_file(self, *, line_id: str, user_id: str, author_id: str, path: Path,
                   comment: str | None = None) -> None:
         meta = {"line_id": line_id, "user_id": user_id, "author_id": author_id,
-                "file_name": path.name, "bot_as_spec": True}
+                "file_name": path.name}
         if comment:
             meta["comment"] = comment
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
