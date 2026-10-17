@@ -44,6 +44,19 @@ class RunResult:
     limit_hit: bool = False
     error: str | None = None
     tools: list[str] = field(default_factory=list)
+    subtype: str | None = None       # success | error_max_turns | error_during_execution …
+    has_result: bool = False         # Claude дошёл до ответа — разговор с этим id сохранён
+    timed_out: bool = False          # остановлен по timeout_seconds
+
+    @property
+    def session_missing(self) -> bool:
+        """--resume разговора, которого у Claude нет."""
+        return bool(self.error and _MISSING_RE.search(self.error))
+
+    @property
+    def session_taken(self) -> bool:
+        """--session-id уже занят: разговор есть, его надо продолжать."""
+        return bool(self.error and _TAKEN_RE.search(self.error))
 
 
 def forbidden_tools(tools: list[str], allowed: list[str]) -> list[str]:
@@ -54,6 +67,8 @@ def forbidden_tools(tools: list[str], allowed: list[str]) -> list[str]:
     ]
 
 
+_MISSING_RE = re.compile(r"(?i)no conversation found|session .{0,60}not found")
+_TAKEN_RE = re.compile(r"(?i)already in use")
 _LIMIT_RE = re.compile(r"(?i)(usage limit|limit reached|limit will reset|out of (extra )?usage|лимит)")
 _UNIX_TS_RE = re.compile(r"\|(\d{10})\b")
 _RESET_AT_RE = re.compile(r"(?i)resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?")
@@ -104,6 +119,16 @@ class ClaudeRunner:
     def __init__(self, settings: Settings):
         self.settings = settings
 
+    def session_exists(self, session_id: str) -> bool | None:
+        """Есть ли у Claude сохранённый разговор с этим id (транскрипт в профиле бота).
+        None — профиль бота не задан, проверить нельзя: решает отметка моста."""
+        if not self.settings.claude.config_dir:
+            return None
+        projects = Path(self.settings.claude.config_dir) / "projects"
+        if not projects.is_dir():
+            return None
+        return any(projects.glob(f"*/{session_id}.jsonl"))
+
     def _env(self) -> dict[str, str]:
         drop = self.settings.bridge_only_env_names()
         env = {k: v for k, v in os.environ.items() if k not in drop}
@@ -150,12 +175,19 @@ class ClaudeRunner:
         stderr_parts: list[str] = []
         reader = threading.Thread(target=lambda: stderr_parts.append(proc.stderr.read()), daemon=True)
         reader.start()
-        timer = threading.Timer(self.settings.claude.timeout_seconds, _kill_tree, args=(proc,))
+        expired = threading.Event()
+
+        def stop() -> None:
+            expired.set()
+            _kill_tree(proc)
+        timer = threading.Timer(self.settings.claude.timeout_seconds, stop)
         timer.start()
         try:
             proc.stdin.write(question)
             proc.stdin.close()
-            return self._read_stream(proc, allowed, stderr_parts, reader)
+            result = self._read_stream(proc, allowed, stderr_parts, reader)
+            result.timed_out = expired.is_set() and not result.has_result
+            return result
         finally:
             timer.cancel()
             _kill_tree(proc)
@@ -196,10 +228,11 @@ class ClaudeRunner:
                              error=err.strip()[:1000], tools=tools)
 
         text = result.get("result") or ""
-        is_error = bool(result.get("is_error")) or result.get("subtype", "success") != "success"
+        subtype = result.get("subtype", "success")
+        is_error = bool(result.get("is_error")) or subtype != "success"
         limit, reset = parse_limit(text) if is_error else (False, None)
         return RunResult(
             text=text, is_error=is_error, tools=tools, limit_hit=limit, limit_reset=reset,
-            session_total_cost=result.get("total_cost_usd"),
-            error=(text or result.get("subtype")) if is_error else None,
+            session_total_cost=result.get("total_cost_usd"), subtype=subtype, has_result=True,
+            error=(text or subtype) if is_error else None,
         )

@@ -498,10 +498,11 @@
     "claude-sonnet-5-5": "умная и в несколько раз экономнее",
     "claude-haiku-5-5": "самая быстрая и дешёвая",
   };
+  const IDLE = [[1, "1 час", "короткие вопросы"], [4, "4 часа", "полдня"], [8, "8 часов", "рабочий день"], [24, "Сутки", "долгие задачи"]];
   const EFFORT = { low: ["Низкая", "быстрые ответы"], medium: ["Средняя", "баланс"], high: ["Высокая", "думает тщательнее"], max: ["Максимальная", "медленнее и дороже"] };
   async function settingsPage() {
     const s = await api("settings");
-    const form = { model: s.model, effort: s.effort, ack_text: s.ack_text };
+    const form = { model: s.model, effort: s.effort, idle_hours: s.idle_hours, ack_text: s.ack_text };
     const v = s.version || {};
     const draw = () => {
       page.innerHTML = `
@@ -511,6 +512,9 @@
           <div class="choice four">${s.efforts.map((e) => `<button class="opt ${form.effort === e ? "on" : ""}" data-effort="${e}"><b>${EFFORT[e][0]}</b><span>${EFFORT[e][1]}</span></button>`).join("")}</div></div>
         </div>
         <div class="card"><h2>Сообщения</h2>
+          <div class="field"><label>Сколько помнить разговор</label>
+            <div class="choice four">${IDLE.map(([h, t, d]) => `<button class="opt ${+form.idle_hours === h ? "on" : ""}" data-idle="${h}"><b>${t}</b><span>${d}</span></button>`).join("")}</div>
+            <div class="hint">Столько бот держит разговор и выбранную базу, пока сотрудник молчит. Вернуться к более старому разговору сотрудник может сам — командой /продолжить.</div></div>
           <div class="field"><label for="ack">Сообщение «принял вопрос»</label>
             <input type="text" id="ack" value="${esc(form.ack_text)}" maxlength="300" placeholder="Пусто — не отправлять">
             <div class="hint">Бот сразу отправляет его в линию, пока готовит ответ. Не оставляйте пустым: если линия не получит ответа за 30 секунд, 1С-Коннект передаст обращение живому специалисту.</div></div>
@@ -526,6 +530,7 @@
         </div>`;
       page.querySelectorAll("[data-model]").forEach((b) => b.onclick = () => { form.model = b.dataset.model; draw(); });
       page.querySelectorAll("[data-effort]").forEach((b) => b.onclick = () => { form.effort = b.dataset.effort; draw(); });
+      page.querySelectorAll("[data-idle]").forEach((b) => b.onclick = () => { form.idle_hours = +b.dataset.idle; draw(); });
       $("#ack").oninput = (e) => { form.ack_text = e.target.value; markDirty(); };
       $("#save").onclick = save;
       $("#update").onclick = update;
@@ -533,7 +538,7 @@
       markDirty();
     };
     const markDirty = () => {
-      const dirty = form.model !== s.model || form.effort !== s.effort || form.ack_text !== s.ack_text;
+      const dirty = form.model !== s.model || form.effort !== s.effort || +form.idle_hours !== +s.idle_hours || form.ack_text !== s.ack_text;
       $("#dirty").textContent = dirty ? "Есть несохранённые изменения" : "";
       $("#save").disabled = !dirty;
     };

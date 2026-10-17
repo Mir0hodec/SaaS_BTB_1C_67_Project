@@ -72,7 +72,7 @@ class Runner:
 
     def run(self, **kw):
         self.calls.append(kw)
-        return RunResult(text="Готово", is_error=False, session_total_cost=0.01)
+        return RunResult(text="Готово", is_error=False, session_total_cost=0.01, has_result=True)
 
 
 def _ask(env, monkeypatch, user_key, text, *, health=(True, ""), probe=None):

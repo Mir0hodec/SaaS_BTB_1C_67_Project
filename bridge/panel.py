@@ -336,7 +336,7 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
 
     def settings_view() -> dict:
         c, cs = settings.claude, settings.connect
-        return {"model": c.model, "effort": c.effort,
+        return {"model": c.model, "effort": c.effort, "idle_hours": round(settings.idle_timeout_minutes / 60, 1),
                 "ack_text": cs.ack_text, "models": [{"id": k, "name": v} for k, v in MODELS.items()],
                 "efforts": EFFORTS, "version": version,
                 "supervised": os.environ.get("BRIDGE_SUPERVISED") == "1", "windows_user": windows_user()}
@@ -360,6 +360,15 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
             if body["effort"] not in EFFORTS:
                 raise HTTPException(400, "неизвестная глубина рассуждений")
             changes.append((("claude", "effort"), body["effort"], lambda v: setattr(settings.claude, "effort", v)))
+        if "idle_hours" in body:
+            try:
+                hours = float(body["idle_hours"])
+            except (TypeError, ValueError):
+                raise HTTPException(400, "сколько помнить разговор — число часов") from None
+            if not 1 <= hours <= 72:
+                raise HTTPException(400, "сколько помнить разговор — от 1 до 72 часов")
+            changes.append((("session", "idle_timeout_minutes"), int(hours * 60),
+                            lambda v: setattr(settings, "idle_timeout_minutes", v)))
         if "ack_text" in body:
             text = str(body["ack_text"] or "").strip()
             if len(text) > 300 or "\n" in text:

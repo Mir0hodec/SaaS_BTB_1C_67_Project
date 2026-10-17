@@ -44,6 +44,7 @@ def settings(repo_root, tmp_path, monkeypatch):
     s.claude.binary = str(repo_root / "scripts" / "mock_claude.cmd")
     s.claude.config_dir = ""
     s.connect.line_id, s.connect.bot_specialist_id = LINE, BOT
+    s.connect.batch_seconds = 0        # по сообщению на вопрос; склейку проверяет отдельный тест
     monkeypatch.setenv("CONNECT_WEBHOOK_TOKEN", "hook-secret")
     monkeypatch.setenv("ASSISTANT_API_TOKEN_LANGFLOW", "api-secret")
     return s
@@ -76,6 +77,7 @@ def _event(text=None, *, msg_id, user=USER, author=None, mtype=1, file=None):
 
 
 def _drain(client):
+    client.app.state.batcher.flush()
     client.app.state.worker.queue.join()
 
 
@@ -140,22 +142,28 @@ def test_forbidden_tools_detects_terminal_and_foreign_mcp():
 def test_session_follows_base_and_idle(tmp_path):
     st = Store(tmp_path / "s.sqlite3")
     a = st.session("u", "demo_base", 60, keep_base=False)
+    unanswered = st.session("u", None, 60, keep_base=True)   # Claude ещё не отвечал — разговор не начат
+    st.mark_started("u", a.session_id, "demo_base", "первый вопрос", 0.05)
     b = st.session("u", None, 60, keep_base=True)          # без ссылки — та же база, тот же разговор
     c = st.session("u", "other", 60, keep_base=False)      # другая база — новый разговор
-    assert a.is_new and not b.is_new and b.base_id == "demo_base" and c.is_new
+    assert a.is_new and unanswered.is_new and unanswered.session_id == a.session_id
+    assert not b.is_new and b.base_id == "demo_base" and c.is_new
     st._exec("UPDATE sessions SET last_active='2000-01-01T00:00:00+00:00'")
     d = st.session("u", None, 60, keep_base=True)          # после простоя — заново, без базы
     assert d.is_new and d.base_id is None
+    assert [x["title"] for x in st.conversations("u")] == ["первый вопрос"]   # прошлый разговор — в архиве
 
 
-def test_session_after_error_keeps_base(tmp_path):
+def test_session_restart_keeps_base_and_asks_recap(tmp_path):
     st = Store(tmp_path / "s.sqlite3")
     a = st.session("u", "test_base", 60, keep_base=False)
-    st.restart_session("u")                                # сбой: разговор Claude — заново
+    st.mark_started("u", a.session_id, "test_base", "вопрос", None)
+    st.restart_session("u")                                # разговор Claude сломан — заново
     b = st.session("u", None, 60, keep_base=True)          # «исправь» без ссылки
+    st.mark_started("u", b.session_id, "test_base", "исправь", None)
     c = st.session("u", None, 60, keep_base=True)
-    assert b.is_new and b.base_id == "test_base" and b.session_id != a.session_id
-    assert not c.is_new and c.session_id == b.session_id
+    assert b.is_new and b.recap and b.base_id == "test_base" and b.session_id != a.session_id
+    assert not c.is_new and not c.recap and c.session_id == b.session_id
 
 
 # --- 1С-Коннект целиком (заглушка CLI) ---

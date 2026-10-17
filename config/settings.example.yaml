@@ -23,6 +23,7 @@ connect:                        # сотрудники пишут в линию 
   max_message_chars: 4000
   file_download_hosts: ["buhphone.com", "1c-connect.com"]
   max_attachment_mb: 20
+  batch_seconds: 4              # картинка и текст, пришедшие подряд, — один вопрос
 
 # API-мост: тот же помощник для внутренних сервисов (Langflow и т.п.)
 api:
@@ -32,7 +33,7 @@ api:
       bases: "*"
 
 session:
-  idle_timeout_minutes: 60      # через час простоя разговор начинается заново
+  idle_timeout_minutes: 480     # через 8 часов тишины разговор начинается заново; вернуться — /продолжить
   data_dir: ".data"             # SQLite (сессии, журнал) и рабочие папки
 
 # Поиск по коду 1С (onec_rag/README.md). Нет файла конфига — инструменты не подключаются.

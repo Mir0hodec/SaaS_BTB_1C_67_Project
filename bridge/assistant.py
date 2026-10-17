@@ -3,12 +3,14 @@
 Путь вопроса (как на слайде «Путь одного вопроса»):
   1. белый список проверен до этого (линия «ИИ-помощник»);
   2. по ссылке в сообщении находим базу (или берём базу разговора), конфиг MCP — только для неё;
-  3. Claude Code продолжает сессию этого сотрудника;
+  3. Claude Code продолжает сессию этого сотрудника; что мост ответил сам, без Claude
+     (отказы, подключение базы), уходит заметкой в следующий вопрос — разговор не рвётся;
   4. Claude изучает метаданные, пишет запросы, проверяет и считает;
   5. ответ чистится, файлы собираются, всё уходит в чат.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
@@ -17,7 +19,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -45,6 +47,8 @@ HELP = (
     "Вопросы «как сделать» — ищу в базе знаний компании.\n"
     "Проверка контрагента: «проверь контрагента 750710450345» — долг и неподписанные ЭАВР.\n"
     "Можно прислать скриншот, PDF или файл вместе с вопросом.\n"
+    "Я помню разговор 8 часов. Вернуться к прошлому (например, вчерашнему) — /продолжить, "
+    "список последних — /разговоры.\n"
     "Команды: /базы — ваши базы и ссылки на них, /новый — начать разговор заново, "
     "/инструкция — подробная инструкция файлом, /toolkit — подключить к помощнику свою копию базы."
 )
@@ -187,7 +191,12 @@ class Assistant:
             return Reply("Помощник снова работает.", "command")
         if cmd in ("/новый", "/new", "/сброс"):
             self.store.reset_session(job.user.key)
-            return Reply("Начинаем разговор заново.", "command")
+            self._clear_pending(job.user.key)
+            return Reply("Начинаем разговор заново. Вернуться к прошлому — /продолжить.", "command")
+        if cmd in ("/разговоры", "/история", "/history"):
+            return self._list_conversations(job)
+        if cmd in ("/продолжить", "/continue", "/вернуться"):
+            return self._continue(job)
         if cmd in ("/базы", "/bases"):
             mine = [b for b in self.bases().values()
                     if job.user.can_use(b.id) and b.allowed_for(job.user.key) and b.link]
@@ -230,13 +239,13 @@ class Assistant:
         if command:
             return command
         if self.store.get_state("paused"):
-            return Reply("Помощник временно выключен. Попробуйте позже.", "paused")
+            return self._bridge_reply(job, Reply("Помощник временно выключен. Попробуйте позже.", "paused"))
 
         limit_until = self.store.get_state("limit_until")
         if limit_until and datetime.fromisoformat(limit_until) > datetime.now():
             # Не повторяем попытку зря: до сброса лимита Claude не запускаем.
-            return Reply(f"Лимит подписки исчерпан. Обновится в {datetime.fromisoformat(limit_until):%H:%M}.",
-                         "limit")
+            return self._bridge_reply(job, Reply(
+                f"Лимит подписки исчерпан. Обновится в {datetime.fromisoformat(limit_until):%H:%M}.", "limit"))
 
         bases = self.bases()
         base, question = None, job.text.strip()
@@ -247,28 +256,35 @@ class Assistant:
         else:
             linked = self._base_by_link(job, bases, started)
             if isinstance(linked, Reply):
-                return linked
+                return self._bridge_reply(job, linked)
             if linked is not None:
                 base, question = linked
+            else:
+                base = self._retry_pending(job, bases, started)
+        if base is not None and base.id not in bases:
+            bases = self.bases()             # базу только что внесли по ссылке
         if base is not None and not job.user.can_use(base.id):
             self._log(job, base.id, "denied", started)
-            return Reply(f"У вас нет доступа к базе «{base.title}».", "denied")
+            return self._bridge_reply(job, Reply(f"У вас нет доступа к базе «{base.title}».", "denied"))
         if not question and not job.attachments:
             if base is None:
                 return Reply("Напишите вопрос.", "need_base")
             # Только ссылка — проверяем базу и остаёмся в ней, Claude не запускаем.
             refusal = self._gate(job, base, started)[0]
             if refusal:
-                return refusal
+                return self._bridge_reply(job, refusal, link=base.link)
+            self._clear_pending(job.user.key, base.link)
             self.store.session(job.user.key, base.id, self.settings.idle_timeout_minutes, keep_base=False)
-            return Reply(self._connected_text(base), "command")
+            return self._bridge_reply(job, Reply(self._connected_text(base), "command"))
 
         session = self.store.session(job.user.key, base.id if base else None,
                                      self.settings.idle_timeout_minutes, keep_base=base is None)
         base = bases.get(session.base_id) if session.base_id else None
         refusal, extra_env = self._gate(job, base, started) if base is not None else (None, {})
         if refusal:
-            return refusal
+            return self._bridge_reply(job, refusal, link=base.link)
+        if base is not None:
+            self._clear_pending(job.user.key, base.link)
         if job.on_start:
             job.on_start()
         self.refresh_knowledge_base()
@@ -283,17 +299,163 @@ class Assistant:
         check = self.toolkit_checks.get(base.id) if base is not None and base.via_toolkit else None
         mcp_config = build_mcp_config(self.settings, base_id=base.id if base else None, outbox=outbox,
                                       attachments=attach_dir, target=workdir / "mcp" / f"{job_id}.json", base=base)
-        result = self.runner.run(
-            question=self._compose(job.user, base, question, attachments),
-            session_id=session.session_id, is_new=session.is_new, cwd=workdir,
-            mcp_config=mcp_config,
-            allowed=session_tools(self.settings, base),
-            disallowed=session_disallowed(self.settings, base, check.tools if check else ()),
-            extra_env=extra_env,
-        )
-        return self._finish(job, base, question, result, outbox, started)
+        notes = self.store.notes(job.user.key, self.settings.idle_timeout_minutes)
+
+        def ask(sess, is_new: bool) -> RunResult:
+            recap = self._recap(job.user.key) if is_new and sess.recap else []
+            return self.runner.run(
+                question=self._compose(job.user, base, question, attachments,
+                                       notes=[t for _, t in notes[-10:]], recap=recap),
+                session_id=sess.session_id, is_new=is_new, cwd=workdir, mcp_config=mcp_config,
+                allowed=session_tools(self.settings, base),
+                disallowed=session_disallowed(self.settings, base, check.tools if check else ()),
+                extra_env=extra_env,
+            )
+
+        is_new = self._is_new(session)
+        result = ask(session, is_new)
+        if not result.has_result and not is_new and result.session_missing:
+            # Разговора у Claude нет (удалён, не сохранился) — новый, с напоминанием истории из журнала.
+            log.warning("разговор %s не найден у Claude — начинаю новый", session.session_id)
+            self.store.restart_session(job.user.key)
+            session = self.store.session(job.user.key, base.id if base else None,
+                                         self.settings.idle_timeout_minutes, keep_base=base is None)
+            result = ask(session, True)
+        elif not result.has_result and is_new and result.session_taken:
+            result = ask(session, False)    # разговор уже есть — продолжаем его
+        if result.has_result and notes:
+            self.store.clear_notes(job.user.key, notes[-1][0])
+        return self._finish(job, base, question, result, outbox, started, session.session_id)
 
     TOOLKIT_RECHECK_SECONDS = 900
+    PENDING_TRIES = 3            # сколько раз повторить неподключившуюся ссылку на следующих сообщениях
+    PENDING_MINUTES = 60
+
+    def _is_new(self, session) -> bool:
+        """Есть ли у Claude этот разговор: по транскрипту в профиле бота, если его видно, иначе — по отметке моста."""
+        exists = getattr(self.runner, "session_exists", lambda _sid: None)(session.session_id)
+        return session.is_new if exists is None else not exists
+
+    def _bridge_reply(self, job: Job, reply: Reply, *, link: str = "") -> Reply:
+        """Ответ моста без Claude: Claude узнает о нём из заметки в следующем вопросе,
+        а неподключившуюся ссылку мост повторит сам на следующих сообщениях."""
+        self.store.add_note(job.user.key, f"Сотрудник написал: «{_short(job.text, 500)}». Ответил мост (без тебя): "
+                                          f"«{_short(reply.text, 500)}»")
+        if link and reply.status in ("toolkit", "denied"):
+            self._set_pending(job, link)
+        return reply
+
+    def _pending(self, user_key: str) -> dict | None:
+        raw = self.store.get_state(f"pending_link:{user_key}")
+        try:
+            return json.loads(raw) if raw else None
+        except ValueError:
+            return None
+
+    def _set_pending(self, job: Job, link: str) -> None:
+        old = self._pending(job.user.key)
+        if old and onec_extension.same_link(old["link"], link):
+            old["tries"] += 1
+        else:
+            old = {"link": link, "question": _short(job.text, 1000), "tries": 0, "at": now().isoformat()}
+        self.store.set_state(f"pending_link:{job.user.key}", json.dumps(old, ensure_ascii=False))
+
+    def _clear_pending(self, user_key: str, link: str | None = None) -> None:
+        """Забыть неподключившуюся ссылку; с link — только если она ведёт на эту базу (база заработала)."""
+        pending = self._pending(user_key)
+        if pending and (link is None or onec_extension.same_link(pending["link"], link)):
+            self.store.set_state(f"pending_link:{user_key}", None)
+
+    def _retry_pending(self, job: Job, bases: dict[str, Base], started: float) -> Base | None:
+        """Сотрудник прислал ссылку, база не подключилась, он что-то поправил и пишет «поставила 1» или
+        «подключись» уже без ссылки. Мост сам повторяет подключение по той ссылке — если сотрудник
+        тем временем не работает в другой базе."""
+        pending = self._pending(job.user.key)
+        if not pending:
+            return None
+        if pending["tries"] >= self.PENDING_TRIES or \
+                now() - datetime.fromisoformat(pending["at"]) > timedelta(minutes=self.PENDING_MINUTES):
+            self._clear_pending(job.user.key)
+            return None
+        current = self.store.current(job.user.key, self.settings.idle_timeout_minutes)
+        current_base = bases.get(current[1]) if current and current[1] else None
+        if current_base is not None and not onec_extension.same_link(current_base.link, pending["link"]):
+            return None
+        probe_job = Job(channel=job.channel, user=job.user, text=pending["link"])
+        linked = self._base_by_link(probe_job, bases, started)   # неудача сама отметит попытку
+        base = linked[0] if isinstance(linked, tuple) else None
+        refusal = linked if isinstance(linked, Reply) else None
+        if linked is None:
+            self._set_pending(job, pending["link"])
+        elif base is not None and job.user.can_use(base.id):
+            refusal = self._gate(job, base, started)[0]
+            if refusal is not None:
+                self._set_pending(job, pending["link"])
+        if base is None or refusal is not None:
+            why = refusal.text if refusal else "по ссылке не нашлась база 1С"
+            self.store.add_note(job.user.key, f"Мост ещё раз попробовал подключить базу по ссылке {pending['link']} — "
+                                              f"не вышло: «{_short(why, 400)}». Объясни сотруднику, что поправить.")
+            return None
+        self._clear_pending(job.user.key)
+        self.store.add_note(job.user.key, f"Раньше сотрудник прислал ссылку {pending['link']} с сообщением "
+                                          f"«{_short(pending['question'], 600)}», тогда база не подключилась. Сейчас мост "
+                                          f"подключил её сам — база «{base.title}». Если сотрудник ждёт ответа на то "
+                                          "сообщение — ответь на него.")
+        log.info("база %s подключена повторно по ссылке для %s", base.id, job.user.name)
+        return base
+
+    def _recap(self, user_key: str, since: datetime | None = None, until: datetime | None = None) -> list[str]:
+        """Последние вопросы и ответы из журнала — новому разговору Claude вместо сломанного."""
+        since = since or now() - timedelta(minutes=self.settings.idle_timeout_minutes)
+        rows = self.store.dialog(user_key, since, until)
+        return [f"— Сотрудник: «{_short(r['question'], 400)}»\n  Ты ответил: «{_short(r['answer'], 700)}»"
+                for r in rows]
+
+    def _conversation_list(self, job: Job) -> list[dict]:
+        current = self.store.current(job.user.key, self.settings.idle_timeout_minutes)
+        return self.store.conversations(job.user.key, limit=5, exclude=current[0] if current else None)
+
+    def _conversation_line(self, n: int, conv: dict) -> str:
+        base = self.bases().get(conv["base_id"]) if conv["base_id"] else None
+        at = datetime.fromisoformat(conv["last_active"]).astimezone()
+        where = f"база «{base.title}»" if base else "без базы"
+        return f"{n}. {at:%d.%m %H:%M} · {where} · «{_short(conv['title'] or '', 90)}»"
+
+    def _list_conversations(self, job: Job) -> Reply:
+        convs = self._conversation_list(job)
+        if not convs:
+            return Reply("Прошлых разговоров пока нет.", "command")
+        return Reply("Последние разговоры:\n" + "\n".join(self._conversation_line(i + 1, c)
+                                                            for i, c in enumerate(convs))
+                     + "\n\nВернуться: /продолжить 1 (номер из списка). Просто /продолжить — к последнему.", "command")
+
+    def _continue(self, job: Job) -> Reply:
+        """/продолжить [N] — вернуться к прошлому разговору: тот же разговор Claude и та же база."""
+        convs = self._conversation_list(job)
+        if not convs:
+            return Reply("Прошлых разговоров пока нет — просто задайте вопрос.", "command")
+        parts = job.text.split()
+        n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+        if not 1 <= n <= len(convs):
+            return Reply(f"Нет разговора с номером {n}. Список — /разговоры.", "command")
+        conv = convs[n - 1]
+        exists = getattr(self.runner, "session_exists", lambda _sid: None)(conv["session_id"])
+        alive = exists is not False
+        self.store.resume_conversation(job.user.key, conv, started=alive)
+        self._clear_pending(job.user.key)
+        at = datetime.fromisoformat(conv["last_active"]).astimezone()
+        if alive:
+            self.store.add_note(job.user.key, f"Сотрудник вернулся к этому разговору командой /продолжить "
+                                              f"(последнее сообщение было {at:%d.%m в %H:%M}).")
+        else:
+            history = self._recap(job.user.key, datetime.fromisoformat(conv["started_at"]),
+                                  datetime.fromisoformat(conv["last_active"]) + timedelta(seconds=1))
+            self.store.add_note(job.user.key, "Сотрудник вернулся к разговору от "
+                                              f"{at:%d.%m %H:%M} командой /продолжить. Так он шёл:\n" + "\n".join(history))
+        base = self.bases().get(conv["base_id"]) if conv["base_id"] else None
+        where = f", база «{base.title}»" if base else ""
+        return Reply(f"Вернулся к разговору от {at:%d.%m %H:%M}{where}: «{_short(conv['title'] or '', 120)}». "
+                     "Продолжайте — я помню, о чём шла речь.", "command")
 
     def _gate(self, job: Job, base: Base, started: float) -> tuple[Reply | None, dict[str, str]]:
         if base.via_toolkit:
@@ -342,6 +504,7 @@ class Assistant:
                 text = (f"Копии базы по адресу {raw} нет в списке помощника. Передайте этот адрес и токен "
                         "MCP Toolkit администратору помощника — он внесёт базу, и пришлите ссылку ещё раз.")
                 self._log(job, None, "toolkit", started, error=text)
+                self._set_pending(job, raw)
                 return Reply(text, "toolkit")
         found = onec_extension.find_publication(job.text)
         if found is None:
@@ -351,8 +514,10 @@ class Assistant:
         if not check.ok:
             if not onec_extension.looks_like_1c(url):
                 return None             # обычная ссылка в вопросе, не база 1С
-            text = f"Не получилось подключить базу {url}. {check.message}"
+            text = (f"Не получилось подключить базу {url}. {check.message} Как поправите — просто напишите мне, "
+                    "ссылку повторять не нужно.")
             self._log(job, None, "toolkit", started, error=text)
+            self._set_pending(job, url)
             return Reply(text, "toolkit")
         base_id = onec_extension.base_id_for(url, set(bases))
         title = f"{check.config or 'База'} ({url.rstrip('/').split('/')[-1]})"
@@ -391,10 +556,16 @@ class Assistant:
             return refuse(f"База «{base.title}» сейчас недоступна. {last.message}")
         return None
 
-    def _compose(self, user: User, base: Base | None, question: str, attachments: list[Path]) -> str:
+    def _compose(self, user: User, base: Base | None, question: str, attachments: list[Path], *,
+                 notes: list[str] = (), recap: list[str] = ()) -> str:
         parts = [f"Сотрудник: {user.name}",
                  f"База 1С: {base.title}" if base else "База 1С не выбрана (только база знаний).",
                  "", "Вопрос:", question or "(без текста — см. вложения)"]
+        if notes:
+            parts[2:2] = ["", "Перед этим в чате — без тебя (это видел сотрудник, но не ты):",
+                          *[f"- {n}" for n in notes]]
+        if recap:
+            parts[2:2] = ["", "Предыдущий разговор прервался из-за сбоя. Последние вопросы и твои ответы в нём:", *recap]
         check = self.toolkit_checks.get(base.id) if base is not None else None
         if check is not None and base.via_toolkit:
             parts[2:2] = [f"Подключение: MCP Toolkit {base.toolkit_url}, пользователь {check.user}, конфигурация "
@@ -418,23 +589,35 @@ class Assistant:
         return "\n".join(parts)
 
     def _finish(self, job: Job, base: Base | None, question: str, result: RunResult,
-                outbox: Path, started: float) -> Reply:
+                outbox: Path, started: float, session_id: str) -> Reply:
         base_id = base.id if base else None
+        if result.has_result:
+            # Разговор у Claude есть — следующий вопрос его продолжит (и после ошибки тоже).
+            self.store.mark_started(job.user.key, session_id, base_id, question or job.text,
+                                    result.session_total_cost, ok=not result.is_error)
         if result.limit_hit:
             until = result.limit_reset
             if until:
                 self.store.set_state("limit_until", until.isoformat())
             self._log(job, base_id, "limit", started, error=result.error)
-            return Reply(f"Лимит подписки исчерпан. Обновится в {until:%H:%M}." if until
-                         else "Лимит подписки исчерпан. Попробуйте позже.", "limit")
+            return Reply(f"Лимит подписки исчерпан. Обновится в {until:%H:%M}. Разговор я помню — потом просто "
+                         "напишите «продолжай»." if until else "Лимит подписки исчерпан. Попробуйте позже.", "limit")
 
         cost = self.store.add_cost(job.user.key, result.session_total_cost) \
             if result.session_total_cost is not None else None
         files = sorted(p for p in outbox.iterdir() if p.is_file()) if outbox.is_dir() else []
-        if result.is_error:
-            # Сломанный разговор Claude не продолжаем, но база остаётся: «исправь» пойдёт в неё же.
-            self.store.restart_session(job.user.key)
-            self._log(job, base_id, "error", started, cost=cost, error=result.error)
+        if result.is_error or not result.has_result:
+            self._log(job, base_id, "error", started, cost=cost, error=result.error or "нет ответа")
+            if result.subtype == "error_max_turns":
+                return Reply("Задача оказалась длинной: я не успел закончить за отведённое число шагов. "
+                             "Напишите «продолжай» — продолжу с того же места.", "error", files)
+            if result.timed_out:
+                return Reply(f"Ответ занял больше {self.settings.claude.timeout_seconds // 60} минут, и я остановился. "
+                             "Напишите «продолжай» — продолжу с того же места, или уточните задачу.", "error", files)
+            if self.store.note_failure(job.user.key) >= 2:
+                # Две ошибки подряд в одном разговоре — он, похоже, сломан: следующий вопрос начнёт новый
+                # в той же базе, с напоминанием последних вопросов и ответов.
+                self.store.restart_session(job.user.key)
             return Reply("Не получилось ответить: произошла ошибка. Попробуйте ещё раз "
                          "или переформулируйте вопрос.", "error", files)
 
@@ -453,3 +636,8 @@ class Assistant:
                        answer_chars=answer_chars, files=files,
                        duration_ms=int((time.monotonic() - started) * 1000), cost_usd=cost, error=error,
                        answer=answer)
+
+
+def _short(text: str | None, limit: int) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"

@@ -1,4 +1,4 @@
-"""Состояние моста в одной SQLite: сессии, журнал, пауза, лимит, вложения."""
+"""Состояние моста в одной SQLite: сессии, архив разговоров, заметки, журнал, пауза, лимит, вложения."""
 from __future__ import annotations
 
 import sqlite3
@@ -36,6 +36,15 @@ CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS pending_files (
     id INTEGER PRIMARY KEY, user_key TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL
 );
+-- Что сотрудник писал и что ответил мост без Claude (отказы, подключение базы): уходит в следующий вопрос.
+CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY, user_key TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL
+);
+-- Все разговоры Claude, которые реально начались: к ним можно вернуться командой /продолжить.
+CREATE TABLE IF NOT EXISTS conversations (
+    session_id TEXT PRIMARY KEY, user_key TEXT NOT NULL, base_id TEXT, title TEXT,
+    started_at TEXT NOT NULL, last_active TEXT NOT NULL, cost_total REAL NOT NULL DEFAULT 0
+);
 """
 
 
@@ -47,8 +56,9 @@ def now() -> datetime:
 class Session:
     session_id: str
     base_id: str | None
-    is_new: bool
+    is_new: bool                 # разговора Claude с этим id ещё нет — запуск с --session-id
     cost_total: float
+    recap: bool = False          # новый разговор Claude взамен сломанного — напомнить ему историю
 
 
 class Store:
@@ -60,9 +70,13 @@ class Store:
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(journal)")}
         if "answer" not in cols:   # журнал старых версий — без текста ответа
             self._conn.execute("ALTER TABLE journal ADD COLUMN answer TEXT")
-        if "started" not in {r[1] for r in self._conn.execute("PRAGMA table_info(sessions)")}:
-            # 0 — разговор Claude ещё не начат (после сбоя), база разговора при этом сохранена
+        session_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(sessions)")}
+        if "started" not in session_cols:
+            # 0 — разговор Claude ещё не начат (новый или после сбоя), база разговора при этом сохранена
             self._conn.execute("ALTER TABLE sessions ADD COLUMN started INTEGER NOT NULL DEFAULT 1")
+        if "fails" not in session_cols:
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN fails INTEGER NOT NULL DEFAULT 0")
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN recap INTEGER NOT NULL DEFAULT 0")
         self._lock = threading.Lock()
 
     def _exec(self, sql: str, params: tuple = ()) -> list[tuple]:
@@ -74,30 +88,86 @@ class Store:
     def session(self, user_key: str, base_id: str | None, idle_minutes: int, keep_base: bool) -> Session:
         """Продолжить разговор или начать новый.
 
-        Новый — после часа простоя или при смене базы: модель видит одну базу
+        Новый — после простоя или при смене базы: модель видит одну базу
         и не путает её цифры с цифрами прошлой. keep_base=True (в сообщении
         не было ссылки на базу) — остаёмся в базе текущего разговора.
+        Начатым разговор считается только после ответа Claude (mark_started):
+        если Claude не запускался, следующий вопрос начнёт его, а не продолжит пустой.
         """
-        row = self._exec("SELECT session_id, base_id, last_active, cost_total, started FROM sessions "
+        row = self._exec("SELECT session_id, base_id, last_active, cost_total, started, recap FROM sessions "
                          "WHERE user_key=?", (user_key,))
         stamp = now().isoformat()
         if row:
-            sid, cur_base, last, cost, started = row[0]
+            sid, cur_base, last, cost, started, recap = row[0]
             fresh = now() - datetime.fromisoformat(last) <= timedelta(minutes=idle_minutes)
             if keep_base:
                 base_id = cur_base if fresh else None
             if fresh and base_id == cur_base:
-                self._exec("UPDATE sessions SET last_active=?, started=1 WHERE user_key=?", (stamp, user_key))
-                return Session(sid, cur_base, not started, cost)
+                self._exec("UPDATE sessions SET last_active=? WHERE user_key=?", (stamp, user_key))
+                return Session(sid, cur_base, not started, cost, bool(recap) and not started)
         sid = str(uuid.uuid4())
-        self._exec("INSERT OR REPLACE INTO sessions (user_key, session_id, base_id, last_active, cost_total, started) "
-                   "VALUES (?, ?, ?, ?, 0, 1)", (user_key, sid, base_id, stamp))
+        self._exec("INSERT OR REPLACE INTO sessions (user_key, session_id, base_id, last_active, cost_total, started, "
+                   "fails, recap) VALUES (?, ?, ?, ?, 0, 0, 0, 0)", (user_key, sid, base_id, stamp))
         return Session(sid, base_id, True, 0.0)
 
+    def current(self, user_key: str, idle_minutes: int) -> tuple[str, str | None] | None:
+        """(session_id, base_id) текущего, ещё не остывшего разговора — без продления."""
+        row = self._exec("SELECT session_id, base_id, last_active FROM sessions WHERE user_key=?", (user_key,))
+        if not row or now() - datetime.fromisoformat(row[0][2]) > timedelta(minutes=idle_minutes):
+            return None
+        return row[0][0], row[0][1]
+
+    def mark_started(self, user_key: str, session_id: str, base_id: str | None, title: str,
+                     cost_total: float | None, ok: bool = True) -> None:
+        """Claude ответил (ok=False — ответил ошибкой) — разговор существует: следующий вопрос его
+        продолжит; он же попадает в архив. Счётчик ошибок подряд сбрасывает только удачный ответ."""
+        stamp = now().isoformat()
+        self._exec("UPDATE sessions SET started=1, recap=0, fails=CASE WHEN ? THEN 0 ELSE fails END "
+                   "WHERE user_key=? AND session_id=?", (1 if ok else 0, user_key, session_id))
+        self._exec("INSERT OR IGNORE INTO conversations (session_id, user_key, base_id, title, started_at, last_active) "
+                   "VALUES (?, ?, ?, ?, ?, ?)", (session_id, user_key, base_id, title[:200], stamp, stamp))
+        self._exec("UPDATE conversations SET last_active=?, base_id=?, cost_total=COALESCE(?, cost_total) "
+                   "WHERE session_id=?", (stamp, base_id, cost_total, session_id))
+
+    def note_failure(self, user_key: str) -> int:
+        """Ещё одна ошибка подряд в текущем разговоре — сколько их теперь."""
+        self._exec("UPDATE sessions SET fails=fails+1 WHERE user_key=?", (user_key,))
+        row = self._exec("SELECT fails FROM sessions WHERE user_key=?", (user_key,))
+        return row[0][0] if row else 0
+
     def restart_session(self, user_key: str) -> None:
-        """После сбоя: следующий вопрос начнёт новый разговор Claude, но в той же базе."""
-        self._exec("UPDATE sessions SET session_id=?, cost_total=0, started=0 WHERE user_key=?",
+        """Разговор Claude сломан: следующий вопрос начнёт новый в той же базе, с напоминанием истории."""
+        self._exec("UPDATE sessions SET session_id=?, cost_total=0, started=0, fails=0, recap=1 WHERE user_key=?",
                    (str(uuid.uuid4()), user_key))
+
+    def conversations(self, user_key: str, limit: int = 5, exclude: str | None = None) -> list[dict]:
+        cols = ["session_id", "base_id", "title", "started_at", "last_active", "cost_total"]
+        rows = self._exec(f"SELECT {', '.join(cols)} FROM conversations WHERE user_key=? AND session_id != ? "
+                          "ORDER BY last_active DESC LIMIT ?", (user_key, exclude or "", limit))
+        return [dict(zip(cols, r)) for r in rows]
+
+    def resume_conversation(self, user_key: str, conv: dict, *, started: bool) -> None:
+        """Вернуть разговор из архива текущим. started=False — транскрипта Claude уже нет: новый разговор
+        в той же базе (историю ему передаёт заметка моста)."""
+        sid = conv["session_id"] if started else str(uuid.uuid4())
+        self._exec("INSERT OR REPLACE INTO sessions (user_key, session_id, base_id, last_active, cost_total, started, "
+                   "fails, recap) VALUES (?, ?, ?, ?, ?, ?, 0, 0)",
+                   (user_key, sid, conv["base_id"], now().isoformat(), conv["cost_total"] if started else 0,
+                    1 if started else 0))
+
+    # --- заметки моста для Claude ---
+
+    def add_note(self, user_key: str, text: str) -> None:
+        self._exec("INSERT INTO notes (user_key, text, created_at) VALUES (?, ?, ?)",
+                   (user_key, text[:1500], now().isoformat()))
+
+    def notes(self, user_key: str, max_age_minutes: int = 480) -> list[tuple[int, str]]:
+        border = (now() - timedelta(minutes=max_age_minutes)).isoformat()
+        return [(i, t) for i, t in self._exec("SELECT id, text FROM notes WHERE user_key=? AND created_at >= ? "
+                                              "ORDER BY id", (user_key, border))]
+
+    def clear_notes(self, user_key: str, upto_id: int) -> None:
+        self._exec("DELETE FROM notes WHERE user_key=? AND id <= ?", (user_key, upto_id))
 
     def add_cost(self, user_key: str, session_total: float) -> float:
         """CLI сообщает накопленную стоимость разговора — возвращаем прирост за вопрос."""
@@ -160,6 +230,15 @@ class Store:
         cols = [*self._PANEL_COLS, "answer"]
         rows = self._exec(f"SELECT {', '.join(cols)} FROM journal WHERE id = ?", (entry_id,))
         return dict(zip(cols, rows[0])) if rows else None
+
+    def dialog(self, user_key: str, since: datetime, until: datetime | None = None, limit: int = 6) -> list[dict]:
+        """Последние вопросы и ответы сотрудника — напомнить новому разговору Claude, о чём шла речь."""
+        until = until or now()
+        rows = self._exec("SELECT created_at, base_id, question, answer FROM journal WHERE user_key=? AND status='ok' "
+                          "AND created_at >= ? AND created_at <= ? ORDER BY id DESC LIMIT ?",
+                          (user_key, since.astimezone(timezone.utc).isoformat(),
+                           until.astimezone(timezone.utc).isoformat(), limit))
+        return [dict(zip(["created_at", "base_id", "question", "answer"], r)) for r in reversed(rows)]
 
     def journal_since(self, since: datetime) -> list[dict]:
         """Записи с момента since (UTC) — для сводки и графика."""

@@ -171,7 +171,7 @@ class Runner:
 
     def run(self, **kw):
         self.calls.append(kw)
-        return RunResult(text="Готово", is_error=False, session_total_cost=0.01)
+        return RunResult(text="Готово", is_error=False, session_total_cost=0.01, has_result=True)
 
 
 def test_gate_and_prompt(fake_1c, tmp_path):
@@ -259,3 +259,25 @@ def test_ordinary_link_is_just_a_question(fake_1c, tmp_path):
                          text="что пишут тут http://127.0.0.1:9/статья про НДС?"))
     assert reply.status == "ok" and len(runner.calls) == 1
     assert "ut_pub" in load_bases(s.bases_path) and len(load_bases(s.bases_path)) == 1
+
+
+def test_failed_link_is_retried_without_link(fake_1c, tmp_path):
+    """14.10 omarova: ссылка → «не подключилась» → сотрудник поправил и пишет «поставила 1» без ссылки.
+    Раньше Claude отвечал «я не вижу предыдущего сообщения»; теперь мост сам повторяет ссылку."""
+    s = _env(tmp_path, fake_1c)
+    s.bases_path.write_text("", encoding="utf-8")
+    runner = Runner()
+    a = Assistant(s, Store(s.data_dir / "s.sqlite3"), runner=runner)
+    ask = lambda text: a.handle(Job(channel="connect", user=User(key="u1", name="Иван", bases="*"), text=text))  # noqa: E731
+
+    Fake1C.published = False
+    failed = ask(f"вот база {fake_1c} почему не проводится поступление БКТДЛ000001?")
+    assert failed.status == "toolkit" and "ссылку повторять не нужно" in failed.text and not runner.calls
+    Fake1C.published = True
+    reply = ask("поставила 1, проверь")
+    assert reply.status == "ok" and len(runner.calls) == 1
+    question = runner.calls[0]["question"]
+    assert "опубликованная база" in question and "Перед этим в чате" in question
+    assert "БКТДЛ000001" in question                       # исходный вопрос дошёл до Claude
+    assert "base1" in load_bases(s.bases_path)
+    assert ask("а остатки?").status == "ok" and "Перед этим в чате" not in runner.calls[-1]["question"]

@@ -5,7 +5,8 @@
 Сотрудники пишут в свою линию «ИИ-помощник»: 1С-Коннект присылает каждое
 сообщение вебхуком на /connect/hook (туннель и SetHook поднимает scripts/start.py),
 ответ уходит REST SendMessageLine от имени учётной записи бота.
-Входящее сразу ставится в очередь; один рабочий поток отвечает по очереди.
+Сообщения сотрудника, пришедшие подряд (скриншот и текст к нему — два события),
+собираются в один вопрос (Batcher); дальше очередь, один рабочий поток отвечает по очереди.
 """
 from __future__ import annotations
 
@@ -44,6 +45,7 @@ log = logging.getLogger("bridge")
 
 TEXT_MESSAGE = 1
 FILE_MESSAGE = 70
+FOLLOWUP_SECONDS = 180      # файл без подписи в течение 3 минут после вопроса — к этому вопросу
 
 
 @dataclass
@@ -90,6 +92,55 @@ class Worker:
                 self.queue.task_done()
 
 
+class Batcher:
+    """Сообщения одного сотрудника, пришедшие с паузой меньше window секунд, — один вопрос.
+
+    1С-Коннект присылает картинку и подпись к ней отдельными событиями, и текст бывает первым:
+    без склейки бот отвечал «ничего не приложено», а файл ждал «напишите вопрос к нему».
+    Команда (/новый, /продолжить…) не склеивается с соседними сообщениями."""
+
+    def __init__(self, window: float, submit: Callable[[User, list[str], list[dict]], None]):
+        self.window = window
+        self.submit = submit
+        self._lock = threading.Lock()
+        self._open: dict[str, dict] = {}
+
+    def add(self, user: User, *, text: str = "", file: dict | None = None) -> None:
+        if text.startswith("/"):
+            self.flush(user.key)
+            self.submit(user, [text], [])
+            return
+        with self._lock:
+            batch = self._open.setdefault(user.key, {"user": user, "texts": [], "files": [], "timer": None})
+            if text:
+                batch["texts"].append(text)
+            if file:
+                batch["files"].append(file)
+            if batch["timer"]:
+                batch["timer"].cancel()
+            if self.window > 0:
+                batch["timer"] = threading.Timer(self.window, self._fire, args=(user.key,))
+                batch["timer"].daemon = True
+                batch["timer"].start()
+        if self.window <= 0:
+            self._fire(user.key)
+
+    def _fire(self, key: str) -> None:
+        with self._lock:
+            batch = self._open.pop(key, None)
+            if batch and batch["timer"]:
+                batch["timer"].cancel()
+        if batch:
+            self.submit(batch["user"], batch["texts"], batch["files"])
+
+    def flush(self, key: str | None = None) -> None:
+        """Отдать накопленное сразу: перед командой, при остановке, в тестах."""
+        with self._lock:
+            keys = [key] if key else list(self._open)
+        for k in keys:
+            self._fire(k)
+
+
 class AskRequest(BaseModel):
     question: str
     session: str = "default"
@@ -105,6 +156,7 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
     connect = connect or ConnectClient(cs.api_base_url, cs.login, cs.password, timeout=cs.request_timeout_seconds,
                                        bot_as_spec=cs.line_hook != "bot")
     worker = Worker(assistant)
+    last_text: dict[str, float] = {}       # когда сотрудник последний раз задал вопрос — для досланных файлов
     directory = Directory(store, (lambda: fetch_specialists(cs.login, cs.password))
                           if cs.login and cs.password else None)
 
@@ -114,6 +166,7 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
         worker.start()
         threading.Thread(target=directory.ensure_fresh, daemon=True).start()
         yield
+        batcher.flush()
         worker.stop()
 
     app = FastAPI(title="ИИ-помощник ГК «Эксперт»", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -164,7 +217,11 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
         return {"status": "ok"}
 
     def handle_event(event: dict) -> None:
-        if event.get("event_type") != "line" or event.get("message_type") not in (TEXT_MESSAGE, FILE_MESSAGE):
+        if event.get("event_type") == "line" and event.get("message_type") not in (TEXT_MESSAGE, FILE_MESSAGE):
+            # Служебные события линии (80, 81, 83…): что в них приходит — только имена полей, без значений.
+            log.info("линия: событие %s, поля: %s", event.get("message_type"), ", ".join(sorted(event)))
+            return
+        if event.get("event_type") != "line":
             return
         if cs.line_id and event.get("line_id") != cs.line_id:
             return
@@ -180,7 +237,6 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
         if not store.first_time(message_id):
             return   # повторная доставка того же события
 
-        deliver = lambda reply: send_reply(user_id, reply)  # noqa: E731
         # Линия с внешним сервером обработки: на каждое сообщение — ответ в течение 30 секунд,
         # иначе 1С-Коннект передаст обращение специалисту. Поэтому «Принял…» — сразу, не из очереди.
         quick_ack = ack(user_id)
@@ -188,16 +244,17 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
             threading.Thread(target=_safe(quick_ack), daemon=True).start()
         if event["message_type"] == TEXT_MESSAGE:
             text = str(event.get("text") or "").strip()
-            if not text:
-                return
-            worker.submit(Task(job=None, deliver=deliver, prepare=lambda: Job(
-                channel="connect", user=user, text=text,
-                attachments=store.take_pending_files(user.key))))
+            if text:
+                batcher.add(user, text=text)
             return
+        batcher.add(user, file=event.get("file") or {})
 
-        file_info = event.get("file") or {}
-        worker.submit(Task(job=None, deliver=deliver,
-                           prepare=lambda: _prepare_file_job(user, file_info, deliver, None)))
+    def submit_batch(user: User, texts: list[str], files: list[dict]) -> None:
+        deliver = lambda reply: send_reply(user.key, reply)  # noqa: E731
+        worker.submit(Task(job=None, deliver=deliver, prepare=lambda: _prepare_batch(user, texts, files, deliver)))
+
+    batcher = Batcher(cs.batch_seconds, submit_batch)
+    app.state.batcher = batcher
 
     def _safe(fn: Callable[[], None]) -> Callable[[], None]:
         def run() -> None:
@@ -207,8 +264,7 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
                 log.exception("линия: не удалось отправить «Принял»")
         return run
 
-    def _prepare_file_job(user: User, info: dict, deliver: Callable[[Reply], None],
-                          on_start: Callable[[], None] | None) -> Job | None:
+    def _download(user: User, info: dict, deliver: Callable[[Reply], None]) -> Path | None:
         name = Path(str(info.get("file_name") or "вложение")).name
         url = info.get("file_path")
         if not url:
@@ -220,13 +276,34 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
         except ConnectError as exc:
             deliver(Reply(f"Не смог получить файл «{name}»: {exc}.", "error"))
             return None
-        comment = str(info.get("comment") or "").strip()
-        if not comment:
-            store.add_pending_file(user.key, dest)
-            deliver(Reply(f"Файл «{name}» получил. Напишите вопрос к нему.", "command"))
+        return dest
+
+    def _prepare_batch(user: User, texts: list[str], files: list[dict],
+                       deliver: Callable[[Reply], None]) -> Job | None:
+        texts = list(texts)
+        got = []
+        for info in files:
+            path = _download(user, info, deliver)
+            if path is not None:
+                got.append(path)
+                texts.append(str(info.get("comment") or "").strip())
+        text = "\n".join(t for t in texts if t).strip()
+        if not text:
+            if not got:
+                return None
+            if time.time() - last_text.get(user.key, 0) <= FOLLOWUP_SECONDS:
+                # Скриншот дошёл уже после вопроса — разбираем его вместе с этим вопросом.
+                return Job(channel="connect", user=user, attachments=[*store.take_pending_files(user.key), *got],
+                           text="(Сотрудник дослал файл к своему предыдущему сообщению — посмотри его в контексте "
+                                "этого сообщения и ответь заново, если файл что-то меняет.)")
+            for path in got:
+                store.add_pending_file(user.key, path)
+            names = ", ".join(f"«{p.name.split('_', 1)[-1]}»" for p in got)
+            deliver(Reply(f"{'Файлы' if len(got) > 1 else 'Файл'} {names} получил. Напишите вопрос к "
+                          f"{'ним' if len(got) > 1 else 'нему'}.", "command"))
             return None
-        return Job(channel="connect", user=user, text=comment,
-                   attachments=[*store.take_pending_files(user.key), dest], on_start=on_start)
+        last_text[user.key] = time.time()
+        return Job(channel="connect", user=user, text=text, attachments=[*store.take_pending_files(user.key), *got])
 
     # --- API-мост ---
 

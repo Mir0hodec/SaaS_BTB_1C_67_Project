@@ -7,9 +7,13 @@ system/init со списком инструментов, затем result. В�
   [mock:limit]      — ответить ошибкой лимита подписки
   [mock:extra-tool] — «подмешать» в сессию запрещённый инструмент Bash
   [mock:error]      — завершиться ошибкой
+  [mock:max-turns]  — исчерпать лимит ходов
+Разговоры помнит, как настоящий CLI (папка .mock_sessions в рабочей папке):
+--resume неизвестного id и --session-id уже существующего — ошибка в stderr без result.
 """
 import json
 import sys
+from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stdin.reconfigure(encoding="utf-8")
@@ -22,6 +26,19 @@ def arg(flag):
 
 question = sys.stdin.read()
 session_id = arg("--session-id") or arg("--resume") or ""
+store = Path.cwd() / ".mock_sessions"
+known = bool(session_id) and (store / session_id).exists()
+if "--resume" in args and not known:
+    print(f"No conversation found with session ID: {session_id}", file=sys.stderr)
+    sys.exit(1)
+if "--session-id" in args and known:
+    print(f"Error: Session ID {session_id} is already in use.", file=sys.stderr)
+    sys.exit(1)
+if session_id:
+    store.mkdir(exist_ok=True)
+    with open(store / session_id, "a", encoding="utf-8") as f:
+        f.write(" ".join(question.split())[:500] + "\n")
+turn = len((store / session_id).read_text(encoding="utf-8").splitlines()) if session_id else 0
 mcp = json.load(open(arg("--mcp-config"), encoding="utf-8"))["mcpServers"] if arg("--mcp-config") else {}
 tools = [t for t in (arg("--allowedTools") or "").split(",") if t]
 if "[mock:extra-tool]" in question:
@@ -40,13 +57,16 @@ if "[mock:limit]" in question:
     emit({"type": "result", "subtype": "success", "is_error": True, "session_id": session_id,
           "result": "Claude usage limit reached. Your limit will reset at 6:20pm."})
     sys.exit(1)
+if "[mock:max-turns]" in question:
+    emit({"type": "result", "subtype": "error_max_turns", "is_error": True, "session_id": session_id,
+          "total_cost_usd": 0.2})
+    sys.exit(1)
 if "[mock:error]" in question:
     emit({"type": "result", "subtype": "error_during_execution", "is_error": True,
           "session_id": session_id, "result": ""})
     sys.exit(1)
 
 if "[mock:file]" in question and "files" in mcp:
-    from pathlib import Path
     out = Path(mcp["files"]["env"]["OUTBOX_DIR"])
     out.mkdir(parents=True, exist_ok=True)
     (out / "отчет.txt").write_text("демо-файл", encoding="utf-8")
@@ -54,4 +74,4 @@ if "[mock:file]" in question and "files" in mcp:
 emit({"type": "result", "subtype": "success", "is_error": False, "session_id": session_id,
       "total_cost_usd": 0.05 if "--session-id" in args else 0.12,
       "result": (f"**[mock]** Получил:\n{question}\n\nСерверы: {sorted(mcp)}. "
-                 f"Сессия: {session_id}. Путь C:\\secret\\file.txt")})
+                 f"Сессия: {session_id}, вопрос №{turn}. Путь C:\\secret\\file.txt")})

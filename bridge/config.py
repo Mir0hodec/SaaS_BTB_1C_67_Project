@@ -59,6 +59,7 @@ class ConnectSettings:
     request_timeout_seconds: int = 60
     file_download_hosts: list[str] = field(default_factory=lambda: ["buhphone.com", "1c-connect.com"])
     max_attachment_mb: int = 20
+    batch_seconds: float = 4.0       # сообщения подряд с паузой меньше этой — один вопрос (картинка + текст)
     line_hook: str = "line"          # SetHook своей линии: line (бот-подписка одна на учётку API — у старого бота) | bot
     webhook_mode: str = "tunnel"     # tunnel — HTTPS через Cloudflare без домена; url — свой адрес
     public_url: str = ""             # для webhook_mode: url, например https://bot.example.kz
@@ -151,7 +152,7 @@ class Settings:
     users_path: Path
     bases_path: Path
     data_dir: Path
-    idle_timeout_minutes: int = 60
+    idle_timeout_minutes: int = 480
     python: str = sys.executable
     port: int = 8010                 # локальный порт моста (8000 на сервере занят старым ботом)
     onec_code: OnecCodeSettings = field(
@@ -194,7 +195,7 @@ class Settings:
             users_path=repo_path(raw.get("users_path", "config/users.yaml")),
             bases_path=repo_path(raw.get("bases_path", "config/bases.yaml")),
             data_dir=repo_path(session.get("data_dir", ".data")),
-            idle_timeout_minutes=session.get("idle_timeout_minutes", 60),
+            idle_timeout_minutes=session.get("idle_timeout_minutes", 480),
             python=raw.get("python") or sys.executable,
             port=int(raw.get("port") or 8010),
             onec_code=OnecCodeSettings(repo_path(code.get("config_path", "onec_rag/config.json")),
