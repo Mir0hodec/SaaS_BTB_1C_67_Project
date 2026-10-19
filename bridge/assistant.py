@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Callable
 
 from bridge.access import Base, User, load_bases, load_users
-from bridge import docs, onec_extension, onec_toolkit, toolkit_secrets
+from bridge import anonymization, docs, onec_extension, onec_toolkit, toolkit_secrets
 from bridge.answer import clean_answer
 from bridge.claude_runner import ClaudeRunner, RunResult
 from bridge.config import REPO_ROOT, Settings
@@ -107,6 +107,7 @@ class Assistant:
         self._kb_lock = threading.Lock()
         self.kb_last: dict = {}      # итог последней переиндексации — для панели
         self.toolkit_checks: dict[str, onec_toolkit.ProbeResult] = {}   # база → последняя полная проверка
+        self.anon_states: dict[str, anonymization.State] = {}   # опубликованная база → обезличивание и ключ моста
 
     def refresh_knowledge_base(self, force: bool = False) -> None:
         """Папку «База знаний» пополняют — индекс догоняет её сам."""
@@ -552,9 +553,39 @@ class Assistant:
         if last is None or not last.ok or time.time() - last.checked_at > self.TOOLKIT_RECHECK_SECONDS:
             last = onec_extension.probe(base.url)
             self.toolkit_checks[base.id] = last
+            if last.ok:
+                self.refresh_anonymization(base)
         if not last.ok:
             return refuse(f"База «{base.title}» сейчас недоступна. {last.message}")
+        if base.id not in self.anon_states:
+            self.refresh_anonymization(base)
         return None
+
+    def refresh_anonymization(self, base: Base) -> anonymization.State:
+        """Привязка моста к базе и правила обезличивания (расширение 0.5+). Сбой — не повод не отвечать."""
+        try:
+            state = anonymization.ensure(base.id, base.url)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("обезличивание: база %s", base.id)
+            state = anonymization.State(False, False, detail=f"обезличивание: {type(exc).__name__}")
+        self.anon_states[base.id] = state
+        return state
+
+    def _detokenize(self, base: Base | None, text: str, files: list[Path]) -> str:
+        """Метки → настоящие значения перед отправкой сотруднику. Не вышло — уходят метки и пометка."""
+        state = self.anon_states.get(base.id) if base is not None and base.via_extension else None
+        if state is None or not state.enabled or not (anonymization.has_tokens(text) or files):
+            return text
+        if not state.key:
+            return text + "\n\n(Данные показаны метками: у помощника нет ключа расшифровки этой базы.)"
+        try:
+            text = anonymization.detokenize_texts(base.url, state.key, [text])[0]
+            for f in files:
+                anonymization.detokenize_file(base.url, state.key, f)
+        except Exception:  # noqa: BLE001
+            log.exception("обезличивание: не удалось расшифровать ответ по базе %s", base.id)
+            text += "\n\n(Часть данных показана метками: расшифровать не удалось, повторите вопрос позже.)"
+        return text
 
     def _compose(self, user: User, base: Base | None, question: str, attachments: list[Path], *,
                  notes: list[str] = (), recap: list[str] = ()) -> str:
@@ -574,6 +605,9 @@ class Assistant:
         elif check is not None and base.via_extension:
             parts[2:2] = [f"Подключение: опубликованная база {base.url}, {check.detail}, конфигурация "
                           f"{check.config} {check.version}. Только чтение: менять данные в этой базе нельзя."]
+            anon = self.anon_states.get(base.id)
+            if anon is not None and anon.enabled:
+                parts[3:3] = ["Данные обезличены: конфиденциальное приходит метками вида [ОРГ-1A2B3C]."]
         for p in attachments:
             parts.append("")
             if p.suffix.lower() in SUPPORTED_EXTENSIONS:
@@ -624,9 +658,10 @@ class Assistant:
         text = clean_answer(result.text)
         if not text and not files:
             text = "Ответ получился пустым. Попробуйте переформулировать вопрос."
+        # В журнал — с метками (как видел Claude), сотруднику — с настоящими значениями.
         self._log(job, base_id, "ok", started, cost=cost, answer_chars=len(text), files=len(files),
                   question=question, answer=text)
-        return Reply(text, "ok", files)
+        return Reply(self._detokenize(base, text, files), "ok", files)
 
     def _log(self, job: Job, base_id: str | None, status: str, started: float, *, cost: float | None = None,
              error: str | None = None, answer_chars: int = 0, files: int = 0, question: str | None = None,

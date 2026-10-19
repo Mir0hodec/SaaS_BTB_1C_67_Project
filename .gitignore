@@ -24,6 +24,7 @@ onec_rag/models/
 config/settings.yaml
 config/users.yaml
 config/bases.yaml
+config/anonymization.yaml
 
 # Документы компании (в т.ч. список клиентов с БИН)
 База знаний/
@@ -36,6 +37,7 @@ config/*.bak
 .secrets/
 extensions/*
 !extensions/README.txt
+!extensions/MCP_HTTPService/
 
 # Ярлык панели в корне папки бота — создаёт scripts/panel_shortcut.ps1
 /*.lnk

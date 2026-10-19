@@ -31,7 +31,7 @@ import requests
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
-from bridge import docs, onec_extension, onec_toolkit, toolkit_secrets
+from bridge import anonymization, docs, onec_extension, onec_toolkit, toolkit_secrets
 from bridge.access import load_bases
 from bridge.config import REPO_ROOT, Settings
 from bridge.connect_directory import Directory, DirectoryError
@@ -506,8 +506,44 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
                 "write": b.write, "token_set": b.id in tokens,
                 "owners": [{"id": o, "name": name_of(o)} for o in b.owners],
                 "check": None if check is None else check_view(check),
+                "anon": anon_view(b.id) if b.via_extension else None,
             })
         return out
+
+    def anon_view(base_id: str) -> dict | None:
+        state = assistant.anon_states.get(base_id)
+        if state is None:
+            return None
+        return {"supported": state.supported, "enabled": state.enabled, "key": bool(state.key), "detail": state.detail}
+
+    # --- обезличивание: правила для всех опубликованных баз ---
+
+    @r.get("/panel/api/anonymization")
+    def anonymization_rules(request: Request) -> dict:
+        guard(request, api=True)
+        return {"rules": anonymization.load_rules(), "categories": anonymization.CATEGORIES,
+                "custom": anonymization.CONFIG_RULES.is_file()}
+
+    def push_rules() -> dict:
+        try:
+            bases_ = [b for b in load_bases(settings.bases_path).values() if b.via_extension]
+        except (FileNotFoundError, ValueError):
+            bases_ = []
+        return {"bases": [{"id": b.id, "title": b.title, "detail": assistant.refresh_anonymization(b).detail}
+                          for b in bases_]}
+
+    @r.post("/panel/api/anonymization")
+    async def save_anonymization(request: Request) -> dict:
+        guard(request, api=True)
+        body = await request.json()
+        if body.get("reset"):
+            anonymization.CONFIG_RULES.unlink(missing_ok=True)
+        elif isinstance(body.get("rules"), dict):
+            anonymization.save_rules(body["rules"])
+        else:
+            raise HTTPException(400, "нет правил")
+        log.info("панель: правила обезличивания %s", "сброшены" if body.get("reset") else "изменены")
+        return run_job("anonymization", push_rules)
 
     @r.get("/panel/api/bases")
     def bases(request: Request) -> dict:

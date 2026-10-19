@@ -142,3 +142,19 @@ def test_overview_reports_account_and_windows_user(panel):
     client, auth, s, _ = panel
     o = client.get("/panel/api/overview", headers=auth).json()
     assert set(o["account"]) >= {"logged_in", "email", "plan"} and o["windows_user"]["name"]
+
+
+def test_anonymization_rules_edit(panel, tmp_path, monkeypatch):
+    from bridge import anonymization
+    monkeypatch.setattr(anonymization, "CONFIG_RULES", tmp_path / "anonymization.yaml")
+    client, auth, s, _ = panel
+    d = client.get("/panel/api/anonymization", headers=auth).json()
+    assert not d["custom"] and "ОРГ" in d["rules"]["categories"] and d["categories"]["СЧЕТ"] == "Банковские счета"
+    rules = {**d["rules"], "categories": ["ОРГ", "ИИН"], "keep": ["НомерСтроки", "Комментарий"]}
+    job = client.post("/panel/api/anonymization", json={"rules": rules}, headers=auth).json()
+    assert job["kind"] == "anonymization"
+    saved = client.get("/panel/api/anonymization", headers=auth).json()
+    assert saved["custom"] and saved["rules"]["categories"] == ["ОРГ", "ИИН"] and "Комментарий" in saved["rules"]["keep"]
+    client.post("/panel/api/anonymization", json={"reset": True}, headers=auth)
+    assert not client.get("/panel/api/anonymization", headers=auth).json()["custom"]
+    assert client.post("/panel/api/anonymization", json={}, headers=auth).status_code == 400

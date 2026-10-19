@@ -143,6 +143,20 @@ class OneCExtensionClient:
         kind = EXTENSION_TYPES.get(kind, kind)
         return f"{prefix}/{requests.utils.quote(kind)}/{requests.utils.quote(name)}"
 
+    # --- обезличивание (расширение 0.5+): только для моста, у Claude этих инструментов нет ---
+
+    def anonymization(self) -> dict:
+        return self._call("GET", "/anonymization")
+
+    def configure_anonymization(self, key: str, rules: dict | None = None, revision: str = "") -> dict:
+        body: dict = {"key": key}
+        if rules is not None:
+            body.update(rules=rules, revision=revision)
+        return self._call("POST", "/anonymization", json=body)
+
+    def detokenize(self, key: str, texts: list[str]) -> list[str]:
+        return list(self._call("POST", "/detokenize", json={"key": key, "texts": texts}).get("texts") or [])
+
     def run_query(self, query_text: str, params: dict | None = None) -> dict:
         data = self._call("POST", "/query", json={"query": query_text, "parameters": params or {},
                                                   "limit": EXTENSION_QUERY_LIMIT})

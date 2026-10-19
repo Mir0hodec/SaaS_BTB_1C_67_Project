@@ -309,11 +309,58 @@
           <span class="chip ok">Инструкция для сотрудников.html</span>
           ${d.extensions.map(kitChip).join("")}</div>
         <div class="hint" style="margin-top:10px">${d.extensions.length ? "Расширение тоже уходит в комплекте; отдельно — команда /расширение." : "Расширения пока нет."} Положите файл расширения (.cfe) в папку <code>${esc(d.extensions_dir)}</code> — бот начнёт присылать его сам, перезапуск не нужен.</div>
-      </div>`;
+      </div>
+      <div class="card" id="anon-card"><h2>Обезличивание <span class="hint">что скрывается от ИИ в опубликованных базах</span></h2><div class="empty">Загрузка…</div></div>`;
+    anonCard();
     $("#base-add").onclick = () => baseForm({});
     page.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => baseForm(list.find((x) => x.id === b.dataset.edit)));
     page.querySelectorAll("[data-bcheck]").forEach((b) => b.onclick = () => checkBase(b.dataset.bcheck, b));
     page.querySelectorAll("[data-bdel]").forEach((b) => b.onclick = () => deleteBase(b.dataset.bdel));
+  }
+  // --- обезличивание: правила ---
+  const pairsToText = (list) => (list || []).map(([a, b]) => `${a} = ${b}`).join("\n");
+  const textToPairs = (text) => text.split("\n").map((l) => l.split("=").map((x) => x.trim()))
+    .map((p) => p.length > 2 ? ["=" + p[1], p[2]] : p).filter((p) => p.length === 2 && p[0] && p[1]);
+  async function anonCard() {
+    const box = $("#anon-card");
+    if (!box) return;
+    const d = await api("anonymization");
+    const r = d.rules;
+    const cats = Object.entries(d.categories);
+    box.innerHTML = `<h2>Обезличивание <span class="hint">что скрывается от ИИ в опубликованных базах</span></h2>
+      <div class="hint" style="margin-bottom:12px">Расширение MCP_HTTPService (0.5 и новее) отдаёт эти данные ИИ метками вида [ОРГ-1A2B3C], а сотрудник в ответе видит настоящие значения — их подставляет бот. Правила одни для всех опубликованных баз; после сохранения бот сразу отправляет их в базы.${d.custom ? "" : " Сейчас действуют правила по умолчанию."}</div>
+      <label class="row" style="gap:8px;margin-bottom:12px"><input type="checkbox" id="an-on" ${r.enabled ? "checked" : ""}> <b>Обезличивать данные</b></label>
+      <div class="field"><label>Что скрывать</label><div class="kit" id="an-cats">${cats.map(([k, t]) => `<label class="chip ${r.categories.includes(k) ? "accent" : ""}" style="cursor:pointer"><input type="checkbox" data-cat="${esc(k)}" ${r.categories.includes(k) ? "checked" : ""} style="margin-right:6px">${esc(t)}</label>`).join("")}</div></div>
+      <div class="field"><label>Искать в любом тексте</label><div class="kit">${["EMAIL", "ИИН", "ТЕЛ", "КАРТА", "СЧЕТ"].map((k) => `<label class="chip" style="cursor:pointer"><input type="checkbox" data-pat="${k}" ${r.patterns.includes(k) ? "checked" : ""} style="margin-right:6px">${esc(d.categories[k] || k)}</label>`).join("")}</div></div>
+      <details style="margin-top:6px"><summary class="hint" style="cursor:pointer">Подробные правила — какие поля и таблицы</summary>
+        <div class="grid g2" style="margin-top:12px">
+          <div class="field"><label for="an-fields">Поля: часть имени = категория</label><textarea id="an-fields" rows="10" style="width:100%;font-family:var(--mono)">${esc(pairsToText(r.fields))}</textarea><div class="hint">«=Номер = ДОК» — точное имя поля</div></div>
+          <div class="field"><label for="an-tables">Чьё это: часть имени таблицы или реквизита = категория</label><textarea id="an-tables" rows="10" style="width:100%;font-family:var(--mono)">${esc(pairsToText(r.tables))}</textarea><div class="hint">Наименование, код и ссылки таких объектов скрываются</div></div>
+          <div class="field"><label for="an-all">Таблицы, где скрыто всё</label><textarea id="an-all" rows="3" style="width:100%;font-family:var(--mono)">${esc(pairsToText(r.tables_all))}</textarea></div>
+          <div class="field"><label for="an-keep">Не скрывать никогда (поля, по строке)</label><textarea id="an-keep" rows="3" style="width:100%;font-family:var(--mono)">${esc((r.keep || []).join("\n"))}</textarea></div>
+        </div></details>
+      <div class="savebar"><button class="btn ghost" id="an-reset">По умолчанию</button><button class="btn primary" id="an-save">Сохранить и отправить в базы</button></div>
+      <div id="an-res"></div>`;
+    box.querySelectorAll("[data-cat]").forEach((c) => c.onchange = () => c.parentElement.classList.toggle("accent", c.checked));
+    const send = async (body) => {
+      const res = $("#an-res");
+      res.innerHTML = `<div class="check-res"><div class="row"><div class="spinner" style="width:18px;height:18px;border-width:2px"></div>Отправляю правила в базы…</div></div>`;
+      try {
+        const out = await waitJob(await api("anonymization", { method: "POST", body }));
+        res.innerHTML = `<div class="check-res ok"><b>Сохранено.</b>${out.bases.length ? out.bases.map((b) => `<div>${esc(b.title)}: ${esc(b.detail)}</div>`).join("") : "<div>Опубликованных баз пока нет — правила уйдут в базу при подключении.</div>"}</div>`;
+      } catch (e) { res.innerHTML = `<div class="check-res bad">${esc(e.message)}</div>`; }
+    };
+    $("#an-save").onclick = () => send({ rules: {
+      enabled: $("#an-on").checked,
+      categories: [...box.querySelectorAll("[data-cat]")].filter((c) => c.checked).map((c) => c.dataset.cat),
+      patterns: [...box.querySelectorAll("[data-pat]")].filter((c) => c.checked).map((c) => c.dataset.pat),
+      fields: textToPairs($("#an-fields").value), tables: textToPairs($("#an-tables").value),
+      tables_all: textToPairs($("#an-all").value),
+      keep: $("#an-keep").value.split("\n").map((x) => x.trim()).filter(Boolean),
+    } });
+    $("#an-reset").onclick = async () => {
+      if (await confirmBox("Вернуть правила по умолчанию?", "Ваши изменения в правилах обезличивания пропадут.", "Вернуть")) { await send({ reset: true }); anonCard(); }
+    };
   }
   const kitChip = (f) => `<span class="chip ok" title="${esc(nf.format(Math.ceil(f.size / 1024)))} КБ">${esc(f.name)}</span>`;
   function baseRow(b) {
@@ -325,7 +372,7 @@
       : c.ok ? '<span class="chip ok">работает</span>' : '<span class="chip bad">ошибка</span>';
     const extra = [b.link || b.id];
     if (b.kind === "toolkit") extra.push(b.write ? "запись разрешена" : "только чтение");
-    if (b.kind === "extension") extra.push("опубликованная база, только чтение");
+    if (b.kind === "extension") extra.push("опубликованная база, только чтение" + (b.anon ? " · " + b.anon.detail : ""));
     if (b.owners.length) extra.push(b.owners.map((o) => o.name).join(", "));
     return `<div class="item"><div class="row">
         <div class="avatar" style="background:var(--accent-soft);color:var(--accent)">${DB_ICON}</div>

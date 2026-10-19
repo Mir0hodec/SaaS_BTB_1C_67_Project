@@ -248,11 +248,12 @@ td.right, th.right { text-align: right; }
 .seg { display: inline-flex; padding: 3px; gap: 2px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 11px; }
 .seg button { border: none; background: none; padding: 6px 13px; border-radius: 8px; cursor: pointer; color: var(--muted); font-weight: 500; font-size: 13px; }
 .seg button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(31, 30, 29, .1); }
-input[type=text], input[type=search], input[type=number], input[type=password], select {
+textarea, input[type=text], input[type=search], input[type=number], input[type=password], select {
   height: 38px; border-radius: 10px; border: 1px solid var(--line-strong); background: var(--surface);
   color: var(--text); padding: 0 12px; font: inherit; outline: none; min-width: 0;
 }
-input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+textarea { height: auto; padding: 8px 12px; font-size: 13px; line-height: 1.5; resize: vertical; }
+input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .search { position: relative; flex: 1; min-width: 220px; }
 .search input { width: 100%; padding-left: 36px; }
 .search svg { position: absolute; left: 11px; top: 10px; color: var(--faint); }
