@@ -1,8 +1,9 @@
-"""Самопроверка бота раз в час — обычной программой, без запросов к Claude.
+"""Самопроверка бота раз в час — обычной программой.
 
 Проверки (как на вкладке «Проверки» панели, но без траты подписки):
-  * Claude Code — CLI запускается (--version), вход в подписку есть, и последние ответы бота
-    не все с ошибкой (так видно «доступ отключён», «лимит», сломанный вход);
+  * Claude Code — CLI запускается (--version), вход в подписку есть, и бот за последний час успешно
+    отвечал сотрудникам; если не отвечал — один короткий вопрос Claude на самой дешёвой модели
+    (так видно «лимит», «monthly spend limit», «доступ отключён», сломанный вход);
   * API 1С-Коннекта — логин и пароль API принимаются;
   * линия «ИИ-помощник» — вебхук подключён (logs/line.json пишет start.py);
   * база знаний — индекс собран и в нём есть документы.
@@ -59,12 +60,34 @@ def check_claude(settings: Settings, store: Store) -> Check:
     limit = store.get_state("limit_until")
     if limit and datetime.fromisoformat(limit) > datetime.now():
         return Check("Claude Code", False, f"исчерпан лимит подписки, обновится в {datetime.fromisoformat(limit):%H:%M}")
-    since = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
-    rows = store._exec("SELECT status, error FROM journal WHERE created_at >= ? AND status IN ('ok', 'error', 'limit') "
-                       "ORDER BY id DESC LIMIT 3", (since,))
-    if len(rows) == 3 and all(status != "ok" for status, _ in rows):
-        return Check("Claude Code", False, f"три последних ответа — ошибка: {(rows[0][1] or '')[:300]}")
-    return Check("Claude Code", True, (ver.stdout or "").strip()[:60])
+    since = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    answered = store._exec("SELECT 1 FROM journal WHERE created_at >= ? AND status = 'ok' LIMIT 1", (since,))
+    if answered:
+        return Check("Claude Code", True, f"{(ver.stdout or '').strip()[:40]}, отвечал сотрудникам за последний час")
+    return ping_claude(settings, store, (ver.stdout or "").strip()[:40])
+
+
+def ping_claude(settings: Settings, store: Store, version: str = "") -> Check:
+    """Сотрудники за час ничего не получили — спрашиваем Claude напрямую: одно слово, самая дешёвая
+    модель, без инструментов. Так видно лимит подписки, отключённый доступ, сломанный вход."""
+    import copy
+    import tempfile
+    import uuid
+
+    from bridge.claude_runner import ClaudeRunner
+    s = copy.deepcopy(settings)
+    s.claude.model, s.claude.effort, s.claude.max_turns = settings.monitor.ping_model, "low", 1
+    s.claude.timeout_seconds = 180
+    work = Path(tempfile.mkdtemp(prefix="claude-ping-"))
+    config = work / "mcp.json"
+    config.write_text('{"mcpServers": {}}', encoding="utf-8")
+    result = ClaudeRunner(s).run(question="Ответь одним словом: да", session_id=str(uuid.uuid4()), is_new=True,
+                                 cwd=work, mcp_config=config, allowed=[])
+    if result.limit_hit and result.limit_reset:
+        store.set_state("limit_until", result.limit_reset.isoformat())
+    if result.is_error or not result.has_result:
+        return Check("Claude Code", False, f"Claude не отвечает: {(result.error or 'нет ответа')[:300]}")
+    return Check("Claude Code", True, f"{version}, отвечает")
 
 
 def check_connect(settings: Settings) -> Check:

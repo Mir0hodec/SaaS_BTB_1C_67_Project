@@ -41,19 +41,29 @@ def test_alert_once_repeat_and_recovery(tmp_path, monkeypatch):
     assert len(sent) == 3
 
 
-def test_claude_check_reads_journal_without_tokens(tmp_path, monkeypatch, repo_root):
+def test_claude_check_pings_only_when_idle(tmp_path, monkeypatch, repo_root):
+    from bridge.claude_runner import ClaudeRunner, RunResult
     s = _settings(tmp_path)
     s.claude.binary = str(repo_root / "scripts" / "mock_claude.cmd")
     s.claude.config_dir = ""
     store = Store(tmp_path / "s.sqlite3")
-    assert monitor.check_claude(s, store).ok
-    for _ in range(3):
-        store.log(channel="connect", user_key="u", user_name=None, base_id=None, question="q", status="error",
-                  error="Your organization has disabled Claude subscription access for Claude Code")
-    bad = monitor.check_claude(s, store)
-    assert not bad.ok and "disabled" in bad.text
+    asked = []
+    real_run = ClaudeRunner.run
+
+    def run(self, **kw):
+        asked.append(self.settings.claude.model)
+        return real_run(self, **kw)
+    monkeypatch.setattr(ClaudeRunner, "run", run)
+    assert monitor.check_claude(s, store).ok and asked == ["claude-haiku-5-5"]   # за час ответов не было — спросил
     store.log(channel="connect", user_key="u", user_name=None, base_id=None, question="q", status="ok")
-    assert monitor.check_claude(s, store).ok
+    assert monitor.check_claude(s, store).ok and len(asked) == 1                 # бот отвечал — не тратим ни запроса
+
+    monkeypatch.setattr(ClaudeRunner, "run", lambda self, **kw: RunResult(
+        text="You've hit your org's monthly spend limit", is_error=True, has_result=True,
+        error="You've hit your org's monthly spend limit"))
+    store._exec("DELETE FROM journal")
+    bad = monitor.check_claude(s, store)
+    assert not bad.ok and "monthly spend limit" in bad.text
 
 
 def test_line_and_kb_checks(tmp_path):

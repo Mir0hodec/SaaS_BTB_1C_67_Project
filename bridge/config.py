@@ -98,6 +98,7 @@ class MonitorSettings:
     repeat_hours: float = 6          # напоминание, пока не починено
     attempts: int = 3                # каждая проверка — до 3 раз; пишем, только если все не прошли
     retry_seconds: float = 60        # пауза между попытками
+    ping_model: str = "claude-haiku-5-5"   # короткий вопрос к Claude, если за час не было ответов
     first_delay_seconds: int = 300   # первая проверка — через 5 минут после запуска
     notify: list[str] = field(default_factory=lambda: ["Конжуровский"])   # UUID или часть ФИО в 1С-Коннекте
 
