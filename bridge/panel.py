@@ -115,6 +115,7 @@ def _tail(path: Path, lines: int) -> list[str]:
 
 
 def panel_router(*, settings: Settings, store: Store, assistant, worker, directory: Directory, started_at: float,
+                 monitor=None,
                  local_clients: frozenset[str] = frozenset({"127.0.0.1", "::1", "localhost"})) -> APIRouter:
     r = APIRouter()
     token = secrets.token_urlsafe(24)
@@ -474,6 +475,10 @@ def panel_router(*, settings: Settings, store: Store, assistant, worker, directo
             fn = assistant.rebuild_knowledge_base
         elif kind == "dev":
             fn = check_dev
+        elif kind == "monitor" and monitor is not None:
+            def fn() -> dict:
+                done = monitor.tick()
+                return {"ok": all(c.ok for c in done), "checks": [c.__dict__ for c in done]}
         else:
             raise HTTPException(404)
 

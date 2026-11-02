@@ -45,6 +45,12 @@ port: 8010                      # локальный порт моста, нар
 dev:
   v8_path: ""                   # пусто — последняя 8.3 в Program Files/1cv8; иначе каталог bin платформы
 
+# Самопроверка раз в час без запросов к Claude; при поломке — личное сообщение в 1С-Коннекте.
+monitor:
+  interval_minutes: 60          # 0 — выключить
+  repeat_hours: 6               # напоминать, пока не починено
+  notify: ["Конжуровский"]      # UUID или часть ФИО сотрудника 1С-Коннекта
+
 users_path: "config/users.yaml"
 bases_path: "config/bases.yaml"
 

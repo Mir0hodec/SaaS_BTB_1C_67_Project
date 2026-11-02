@@ -492,6 +492,7 @@
 
   // --- проверки ---
   const CHECKS = [
+    { k: "monitor", title: "Самопроверка", text: "Раз в час бот сам проверяет Claude Code (без траты подписки), API 1С-Коннекта, линию и базу знаний. Если что-то сломалось — пишет в личные сообщения 1С-Коннекта ответственному (monitor.notify в settings.yaml). Здесь — запустить сейчас." },
     { k: "claude", title: "Claude Code", text: "Запускает один короткий вопрос с настройками бота: версия CLI, вход в подписку, только нужные инструменты. Тратит один небольшой запрос подписки." },
     { k: "connect", title: "API 1С-Коннекта", text: "Проверяет логин и пароль API и заново загружает справочник сотрудников." },
     { k: "counterparty", title: "Проверка контрагента", text: "Запрос в сервис 1С CounterpartyCheck по БИН/ИИН — долг и неподписанные ЭАВР.", input: true },
@@ -531,6 +532,7 @@
       ${r.specialists != null ? `<div>Специалистов линий: ${r.specialists}</div>` : ""}${r.directory != null ? `<div>Справочник: ${r.directory} сотрудников</div>` : ""}
       ${r.directory_error ? `<div>Справочник: ${esc(r.directory_error)}</div>` : ""}${r.error ? `<pre>${esc(r.error)}</pre>` : ""}</div>`;
     if (k === "counterparty") return `<div class="check-res ${r.status === "ok" ? "ok" : r.status === "needs_manager" ? "" : "bad"}">${stamp}<b>${esc(r.name || "Контрагент")}</b><div>${esc(r.summary)}</div>${r.error ? `<pre>${esc(r.error)}</pre>` : ""}</div>`;
+    if (k === "monitor") return `<div class="check-res ${r.ok ? "ok" : "bad"}">${stamp}<b>${r.ok ? "Всё в порядке" : "Есть проблемы — ответственному ушло сообщение"}</b>${r.checks.map((c) => `<div>${c.ok ? "✓" : "✗"} ${esc(c.name)}: ${esc(c.text)}</div>`).join("")}</div>`;
     if (k === "dev") return `<div class="check-res ${r.ok ? "ok" : "bad"}">${stamp}<b>${r.ok ? `Собрано за ${r.seconds} с (${r.size_kb} КБ)` : "Сборка не удалась"}</b>${r.platform ? `<div class="hint">Платформа: ${esc(r.platform)}</div>` : ""}${r.error ? `<pre>${esc(r.error)}</pre>` : ""}</div>`;
     if (k === "kb") return `<div class="check-res ok">${stamp}<b>Собрано: ${r.indexed} ${plural(r.indexed, "документ", "документа", "документов")}</b>
       <div class="hint">дублей пропущено: ${r.duplicates}, исключено правилами: ${r.excluded}</div>

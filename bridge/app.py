@@ -39,6 +39,7 @@ from bridge.answer import split_message  # noqa: E402
 from bridge.assistant import Assistant, Job, Reply  # noqa: E402
 from bridge.config import Settings  # noqa: E402
 from bridge.connect_client import ConnectClient, ConnectError  # noqa: E402
+from bridge.monitor import Monitor  # noqa: E402
 from bridge.store import Store  # noqa: E402
 
 log = logging.getLogger("bridge")
@@ -160,17 +161,35 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
     directory = Directory(store, (lambda: fetch_specialists(cs.login, cs.password))
                           if cs.login and cs.password else None)
 
+    def alert_recipients() -> list[str]:
+        """monitor.notify: UUID как есть, иначе — сотрудник 1С-Коннекта, в чьём ФИО есть эта строка."""
+        ids = []
+        for entry in settings.monitor.notify:
+            entry = str(entry).strip()
+            if len(entry) == 36 and entry.count("-") == 4:
+                ids.append(entry.lower())
+                continue
+            directory.ensure_fresh()
+            ids += [p.id for p in directory.all() if not p.deleted and entry.lower() in p.full_name.lower()]
+        return ids
+
+    monitor = Monitor(settings, store, recipients=alert_recipients, send=lambda uid, text:
+                      connect.send_colleague_message(recipient_id=uid, author_id=cs.bot_specialist_id, text=text))
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         threading.Thread(target=assistant.refresh_knowledge_base, kwargs={"force": True}, daemon=True).start()
         worker.start()
         threading.Thread(target=directory.ensure_fresh, daemon=True).start()
+        monitor.start()
         yield
+        monitor.stop()
         batcher.flush()
         worker.stop()
 
     app = FastAPI(title="ИИ-помощник ГК «Эксперт»", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.state.worker = worker
+    app.state.monitor = monitor
     app.state.store = store
     app.state.started_at = time.time()
 
@@ -198,7 +217,7 @@ def create_app(settings: Settings | None = None, *, connect: ConnectClient | Non
                                             author_id=cs.bot_specialist_id, text=cs.ack_text)
 
     app.include_router(panel_router(settings=settings, store=store, assistant=assistant, worker=worker,
-                                    directory=directory, started_at=time.time()))
+                                    directory=directory, started_at=time.time(), monitor=monitor))
 
     # --- линия «ИИ-помощник» ---
 

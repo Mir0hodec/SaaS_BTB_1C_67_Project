@@ -2,6 +2,7 @@
 https://1c-connect.atlassian.net/wiki/spaces/PUBLIC/pages/1349877768/4.2.+API
 
 Используемые методы:
+  POST /v1/colleague/send/message/  SendMessagecolleague — личное сообщение (только оповещения самопроверки)
   POST /v1/hook/               SetHook — адрес вебхука (только режим линии)
   POST /v1/line/send/message/  SendMessageLine — текст в чат линии
   POST /v1/line/send/file/     SendFileLine — файл в чат (multipart: meta + file)
@@ -76,6 +77,12 @@ class ConnectClient:
                 "meta": (None, json.dumps(meta, ensure_ascii=False), "application/json"),
                 "file": (path.name, f, mime),
             })
+
+    def send_colleague_message(self, *, recipient_id: str, author_id: str, text: str) -> None:
+        """SendMessagecolleague — личное сообщение сотруднику (поле в API: recepient_id)."""
+        self._post("/v1/colleague/send/message/", json={
+            "recepient_id": recipient_id, "author_id": author_id, "text": text,
+        })
 
     def set_hook(self, *, line_id: str, url: str, token: str, kind: str = "line") -> None:
         self._post("/v1/hook/", json={

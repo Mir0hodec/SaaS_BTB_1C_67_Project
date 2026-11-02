@@ -92,6 +92,15 @@ class ConnectSettings:
 
 
 @dataclass
+class MonitorSettings:
+    """Самопроверка раз в час (bridge/monitor.py) и кому писать, если что-то сломалось."""
+    interval_minutes: int = 60       # 0 — выключена
+    repeat_hours: float = 6          # напоминание, пока не починено
+    first_delay_seconds: int = 300   # первая проверка — через 5 минут после запуска
+    notify: list[str] = field(default_factory=lambda: ["Конжуровский"])   # UUID или часть ФИО в 1С-Коннекте
+
+
+@dataclass
 class ApiClient:
     name: str
     token_env: str
@@ -159,6 +168,7 @@ class Settings:
         default_factory=lambda: OnecCodeSettings(REPO_ROOT / "onec_rag" / "config.json"))
     source: Path = REPO_ROOT / "config" / "settings.yaml"   # откуда прочитаны — сюда пишет панель
     dev: DevSettings = field(default_factory=DevSettings)
+    monitor: MonitorSettings = field(default_factory=MonitorSettings)
 
     @property
     def counterparty_check_enabled(self) -> bool:
@@ -202,4 +212,5 @@ class Settings:
                                        code.get("python", "")),
             source=Path(path),
             dev=DevSettings(**{k: (repo_path(v) if k.endswith("_dir") else v) for k, v in dev.items()}),
+            monitor=MonitorSettings(**(raw.get("monitor") or {})),
         )
