@@ -49,6 +49,7 @@ dev:
 monitor:
   interval_minutes: 60          # 0 — выключить
   repeat_hours: 6               # напоминать, пока не починено
+  attempts: 3                   # каждая проверка до 3 раз; пишем, только если все три не прошли
   notify: ["Конжуровский"]      # UUID или часть ФИО сотрудника 1С-Коннекта
 
 users_path: "config/users.yaml"

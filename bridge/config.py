@@ -96,6 +96,8 @@ class MonitorSettings:
     """Самопроверка раз в час (bridge/monitor.py) и кому писать, если что-то сломалось."""
     interval_minutes: int = 60       # 0 — выключена
     repeat_hours: float = 6          # напоминание, пока не починено
+    attempts: int = 3                # каждая проверка — до 3 раз; пишем, только если все не прошли
+    retry_seconds: float = 60        # пауза между попытками
     first_delay_seconds: int = 300   # первая проверка — через 5 минут после запуска
     notify: list[str] = field(default_factory=lambda: ["Конжуровский"])   # UUID или часть ФИО в 1С-Коннекте
 

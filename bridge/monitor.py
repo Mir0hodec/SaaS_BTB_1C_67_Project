@@ -111,15 +111,32 @@ def check_kb(settings: Settings) -> Check:
     return Check("База знаний", count > 0, f"документов: {count}" if count else "индекс пустой")
 
 
-def run_checks(settings: Settings, store: Store) -> list[Check]:
+def _attempt(fn) -> Check:
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001 — сама проверка упала: это тоже поломка
+        log.exception("самопроверка")
+        return Check("Самопроверка", False, f"{type(exc).__name__}: {exc}")
+
+
+def run_checks(settings: Settings, store: Store, attempts: int | None = None, pause: float | None = None,
+               sleep=time.sleep) -> list[Check]:
+    """Каждая проверка — до attempts раз с паузой: поломка, только если не прошли все попытки
+    (сбой сети на минуту — не повод писать ответственному)."""
+    attempts = attempts or settings.monitor.attempts
+    pause = settings.monitor.retry_seconds if pause is None else pause
     checks = []
     for fn in (lambda: check_claude(settings, store), lambda: check_connect(settings),
                lambda: check_line(settings), lambda: check_kb(settings)):
-        try:
-            checks.append(fn())
-        except Exception as exc:  # noqa: BLE001 — сама проверка упала: это тоже поломка
-            log.exception("самопроверка")
-            checks.append(Check("Самопроверка", False, f"{type(exc).__name__}: {exc}"))
+        result = _attempt(fn)
+        for n in range(2, attempts + 1):
+            if result.ok:
+                break
+            sleep(pause)
+            result = _attempt(fn)
+            if not result.ok and n == attempts:
+                result.text += f" (не прошла {attempts} раза подряд)"
+        checks.append(result)
     return checks
 
 

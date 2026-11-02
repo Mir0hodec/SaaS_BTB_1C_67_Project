@@ -95,3 +95,24 @@ def test_recipients_by_name(tmp_path, monkeypatch, repo_root):
         assert mon.recipients() == ["11111111-1111-1111-1111-111111111111"]
         mon.send("11111111-1111-1111-1111-111111111111", "тест")
     assert sent == [{"recipient_id": "11111111-1111-1111-1111-111111111111", "author_id": "bot", "text": "тест"}]
+
+
+def test_check_must_fail_three_times(tmp_path, monkeypatch):
+    s = _settings(tmp_path)
+    store = Store(tmp_path / "s.sqlite3")
+    calls = {"n": 0}
+
+    def flaky(settings):
+        calls["n"] += 1
+        return Check("API 1С-Коннекта", calls["n"] >= 2, "нет связи" if calls["n"] < 2 else "отвечает")
+    monkeypatch.setattr(monitor, "check_connect", flaky)
+    monkeypatch.setattr(monitor, "check_claude", lambda st, sto: Check("Claude Code", True, "ok"))
+    monkeypatch.setattr(monitor, "check_line", lambda st: Check("Линия", True, "ok"))
+    monkeypatch.setattr(monitor, "check_kb", lambda st: Check("База знаний", True, "ok"))
+    pauses = []
+    checks = monitor.run_checks(s, store, sleep=pauses.append)
+    assert all(c.ok for c in checks) and calls["n"] == 2 and pauses == [60]      # второй раз прошла — не пишем
+    monkeypatch.setattr(monitor, "check_connect", lambda st: Check("API 1С-Коннекта", False, "HTTP 401"))
+    checks = monitor.run_checks(s, store, sleep=lambda x: None)
+    bad = [c for c in checks if not c.ok]
+    assert len(bad) == 1 and "3 раза подряд" in bad[0].text
